@@ -4661,6 +4661,7 @@ def _dashboard_script() -> str:
   const INTRADAY_BUCKET_MINUTES = 15;
   const INTRADAY_TOP_N = 50;
   const INTRADAY_CHART_TOP_N = 24;
+  const OUT_OF_TOP_RANK = INTRADAY_TOP_N + 1;
   const BUTTERFLY_SIDE_LIMIT = 15;
   const INTRADAY_STORAGE_PREFIX = "stock-futures-intraday-history-v1";
   const completedClosingRefreshes = new Set();
@@ -5233,21 +5234,21 @@ def _dashboard_script() -> str:
   function renderRankDelta(movement, mode) {
     if (!movement) return '<span class="rank-delta is-empty">－</span>';
     const delta = mode === "cumulative" ? movement.deltaOpen : movement.delta;
-    const fromRank = mode === "cumulative" ? movement.openRank : movement.prevRank;
+    const fromRank = mode === "cumulative" ? movement.openRankLabel : movement.prevRankLabel;
     const label = mode === "cumulative" ? "08:45" : "前次";
-    const title = `${movement.cutoff} 截點：${label} ${rankDisplay(fromRank)}，目前 ${rankDisplay(movement.currentRank)}`;
+    const title = `${movement.cutoff} 截點：${label} ${fromRank}，目前 ${movement.currentRankLabel}`;
     return `<span class="rank-delta ${rankClass(delta)}" title="${escapeHtml(title)}">${escapeHtml(deltaText(delta))}</span>`;
   }
 
   function rankDisplay(value) {
     const rank = numberOrNull(value);
-    if (rank === null || rank >= 999) return "未進榜";
+    if (rank === null || rank > INTRADAY_TOP_N || rank >= 999) return "未進榜";
     return formatNumber(rank, 0);
   }
 
   function renderRankStatus(movement) {
     if (!movement) return '<span class="rank-status">等待</span>';
-    if (movement.prevRank > INTRADAY_TOP_N && movement.currentRank <= INTRADAY_TOP_N) {
+    if (!movement.prevInTop && movement.currentInTop) {
       return '<span class="rank-status is-new">新進</span>';
     }
     if (movement.delta >= 8) {
@@ -5286,37 +5287,55 @@ def _dashboard_script() -> str:
     return renderRankStatus(movement);
   }
 
-  function movementAt(history, stockId, index) {
-    if (!history || !history.snapshots || !history.snapshots[index]) return null;
+  function movementBetween(history, stockId, fromIndex, toIndex, options = {}) {
+    if (!history || !history.snapshots || !history.snapshots[toIndex]) return null;
     const snapshots = history.snapshots;
-    const currentSnapshot = snapshots[index];
+    const currentSnapshot = snapshots[toIndex];
     const current = snapshotMap(currentSnapshot).get(stockId);
-    if (!current) return null;
+    if (!current && !options.allowMissingCurrent) return null;
     const firstSnapshot = snapshots[0];
-    const previousSnapshot = snapshots[Math.max(0, index - 1)];
+    const previousSnapshot = snapshots[Math.max(0, fromIndex)];
     const secondSnapshot = snapshots[Math.min(1, snapshots.length - 1)];
     const first = snapshotMap(firstSnapshot).get(stockId);
     const previous = snapshotMap(previousSnapshot).get(stockId);
     const second = snapshotMap(secondSnapshot).get(stockId);
-    const openRank = first ? first.rank : 999;
-    const prevRank = previous ? previous.rank : 999;
-    const currentRank = current.rank;
+    const base = current || previous || first;
+    if (!base) return null;
+    const openInTop = !!first;
+    const prevInTop = !!previous;
+    const currentInTop = !!current;
+    const openRank = openInTop ? first.rank : OUT_OF_TOP_RANK;
+    const prevRank = prevInTop ? previous.rank : OUT_OF_TOP_RANK;
+    const currentRank = currentInTop ? current.rank : OUT_OF_TOP_RANK;
     const firstVolume = first ? first.volume : 0;
     const secondVolume = second ? second.volume : firstVolume;
-    const openingSegmentVolume = Math.max(1, secondVolume - firstVolume || current.volume || 1);
+    const currentVolume = current ? current.volume : previous ? previous.volume : firstVolume;
+    const openingSegmentVolume = Math.max(1, secondVolume - firstVolume || currentVolume || 1);
     const elapsed = Math.max(1, Math.round((labelToMinutes(currentSnapshot.cutoff) - labelToMinutes(firstSnapshot.cutoff)) / INTRADAY_BUCKET_MINUTES));
     const expectedVolume = openingSegmentVolume * elapsed;
-    const volumeRate = expectedVolume > 0 ? (current.volume - expectedVolume) / expectedVolume * 100 : 0;
+    const volumeRate = expectedVolume > 0 ? (currentVolume - expectedVolume) / expectedVolume * 100 : 0;
     return {
-      ...current,
+      ...base,
       cutoff: currentSnapshot.cutoff,
+      fromCutoff: previousSnapshot.cutoff,
       openRank,
       prevRank,
       currentRank,
+      openInTop,
+      prevInTop,
+      currentInTop,
+      openRankLabel: openInTop ? rankDisplay(openRank) : "未進榜",
+      prevRankLabel: prevInTop ? rankDisplay(prevRank) : "未進榜",
+      currentRankLabel: currentInTop ? rankDisplay(currentRank) : "未進榜",
       delta: prevRank - currentRank,
       deltaOpen: openRank - currentRank,
+      volume: currentVolume,
       volumeRate
     };
+  }
+
+  function movementAt(history, stockId, index) {
+    return movementBetween(history, stockId, Math.max(0, index - 1), index);
   }
 
   function latestMovementRows(history) {
@@ -5326,6 +5345,37 @@ def _dashboard_script() -> str:
       .map((row) => movementAt(history, row.stock_id, latestIndex))
       .filter(Boolean)
       .sort((a, b) => a.currentRank - b.currentRank);
+  }
+
+  function intervalMovementRows(history) {
+    if (!history || !history.snapshots || history.snapshots.length < 2) return [];
+    const rows = [];
+    for (let index = 1; index < history.snapshots.length; index += 1) {
+      const previousRows = history.snapshots[index - 1].rows || [];
+      const currentRows = history.snapshots[index].rows || [];
+      const stockIds = new Set([
+        ...previousRows.map((row) => row.stock_id),
+        ...currentRows.map((row) => row.stock_id)
+      ]);
+      stockIds.forEach((stockId) => {
+        const movement = movementBetween(history, stockId, index - 1, index, { allowMissingCurrent: true });
+        if (movement) rows.push(movement);
+      });
+    }
+    return rows;
+  }
+
+  function strongestByStock(rows, scoreFn, betterFn) {
+    const best = new Map();
+    rows.forEach((row) => {
+      const key = row.stock_id;
+      const score = scoreFn(row);
+      const current = best.get(key);
+      if (!current || betterFn(score, current.score)) {
+        best.set(key, { row, score });
+      }
+    });
+    return Array.from(best.values()).map((entry) => entry.row);
   }
 
   function renderIntradayEmpty(message) {
@@ -5357,11 +5407,12 @@ def _dashboard_script() -> str:
       <div class="mover-group-title"><span>${escapeHtml(title)}</span><span>${rows.length}</span></div>
       ${rows.map((row) => {
         const delta = mode === "cumulative" ? row.deltaOpen : row.delta;
-        const fromRank = mode === "cumulative" ? row.openRank : row.prevRank;
+        const fromRank = mode === "cumulative" ? row.openRankLabel : row.prevRankLabel;
+        const period = row.fromCutoff && row.cutoff ? `｜${row.fromCutoff}→${row.cutoff}` : "";
         const bar = Math.max(7, row.volume / maxVolume * 100);
         return `<div class="mover-row">
-          <div class="mover-name"><strong>${escapeHtml(row.stock_name)}</strong><span>${rankDisplay(fromRank)} → ${rankDisplay(row.currentRank)} / ${formatNumber(row.volume, 0)} 口</span></div>
-          <div class="rank-now"><strong>${row.currentRank}</strong><span>目前</span></div>
+          <div class="mover-name"><strong>${escapeHtml(row.stock_name)}</strong><span>${fromRank} → ${row.currentRankLabel}${period} / ${formatNumber(row.volume, 0)} 口</span></div>
+          <div class="rank-now"><strong>${row.currentRankLabel}</strong><span>目前</span></div>
           <div class="delta ${rankClass(delta)}">${deltaText(delta)}</div>
           <div class="volume-bar"><i style="width:${bar.toFixed(1)}%"></i></div>
         </div>`;
@@ -5374,21 +5425,32 @@ def _dashboard_script() -> str:
     const rows = latestMovementRows(history);
     if (!movers || rows.length < 1) return;
     const snapshots = history.snapshots || [];
+    const first = snapshots[0];
     const latest = snapshots[snapshots.length - 1];
-    const previous = snapshots[Math.max(0, snapshots.length - 2)];
-    const isNewTopN = (row) => row.prevRank > INTRADAY_TOP_N && row.currentRank <= INTRADAY_TOP_N;
+    const intervalRows = intervalMovementRows(history);
+    const surgeRows = strongestByStock(
+      intervalRows.filter((row) => row.prevInTop && row.currentInTop && row.delta >= 8),
+      (row) => row.delta,
+      (next, current) => next > current
+    ).sort((a, b) => b.delta - a.delta).slice(0, 4);
+    const fadeRows = strongestByStock(
+      intervalRows.filter((row) => row.prevInTop && row.delta <= -8),
+      (row) => row.delta,
+      (next, current) => next < current
+    ).sort((a, b) => a.delta - b.delta).slice(0, 4);
+    const isNewTopN = (row) => !row.prevInTop && row.currentInTop;
     const moverGroups = [
-      renderMoverGroup("急升", rows.filter((row) => row.delta >= 8 && !isNewTopN(row)).sort((a, b) => b.delta - a.delta).slice(0, 4), "interval"),
-      renderMoverGroup("轉弱", rows.filter((row) => row.delta <= -8).sort((a, b) => a.delta - b.delta).slice(0, 4), "interval"),
+      renderMoverGroup("急升", surgeRows, "interval"),
+      renderMoverGroup("轉弱", fadeRows, "interval"),
       renderMoverGroup("新進 TopN", rows.filter(isNewTopN).sort((a, b) => a.currentRank - b.currentRank).slice(0, 4), "interval"),
       renderMoverGroup(
         "08:45起累積變化",
-        rows.slice().sort((a, b) => Math.abs(b.deltaOpen) - Math.abs(a.deltaOpen)).slice(0, 5),
+        rows.filter((row) => row.openInTop && row.currentInTop).sort((a, b) => Math.abs(b.deltaOpen) - Math.abs(a.deltaOpen)).slice(0, 5),
         "cumulative"
       )
     ];
     movers.innerHTML = moverGroups.join("");
-    if (latest && previous) setText("intraday-mover-time", `${previous.cutoff} → ${latest.cutoff}`);
+    if (first && latest) setText("intraday-mover-time", `${first.cutoff} → ${latest.cutoff}`);
     if (latest && snapshots[0]) setText("intraday-trajectory-time", `${snapshots[0].cutoff} → ${latest.cutoff}`);
   }
 
