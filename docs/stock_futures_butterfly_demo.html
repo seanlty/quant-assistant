@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>強弱勢排序 Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #d7dde5;
+      --line-soft: #e9edf2;
+      --ink: #19212b;
+      --muted: #657386;
+      --up: #d83b31;
+      --up-soft: #ff7b34;
+      --down: #1854ae;
+      --down-soft: #4f9af2;
+      --axis: #222b36;
+      --grid: #dbe2ea;
+      --shadow: 0 10px 28px rgba(20, 31, 44, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft JhengHei", "Noto Sans TC", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .shell {
+      width: min(1420px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 18px 0 26px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+      font-weight: 820;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .intraday-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(520px, 0.95fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .panel {
+      min-width: 0;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 48px;
+      margin-bottom: 10px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.3;
+      font-weight: 800;
+    }
+
+    .section-head span {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .trajectory-shell,
+    .butterfly-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .trajectory-shell {
+      height: 462px;
+      display: grid;
+      place-items: center;
+      position: relative;
+    }
+
+    .trajectory-shell svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background:
+        linear-gradient(90deg, transparent 49.9%, rgba(42, 55, 72, 0.55) 50%, transparent 50.1%),
+        linear-gradient(0deg, transparent 49.9%, rgba(42, 55, 72, 0.35) 50%, transparent 50.1%),
+        #fff;
+    }
+
+    .trajectory-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 14px;
+      pointer-events: none;
+    }
+
+    .butterfly-card {
+      height: 540px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .butterfly-head {
+      display: grid;
+      grid-template-columns: 1fr 1px 1fr;
+      border-bottom: 1px solid var(--line-soft);
+      min-height: 54px;
+    }
+
+    .wing-title {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 14px;
+      font-size: 18px;
+      line-height: 1.2;
+      font-weight: 820;
+    }
+
+    .wing-title.up {
+      color: var(--up);
+      background: linear-gradient(90deg, rgba(216, 59, 49, 0.08), rgba(216, 59, 49, 0.02));
+    }
+
+    .wing-title.down {
+      color: var(--down);
+      background: linear-gradient(90deg, rgba(24, 84, 174, 0.02), rgba(24, 84, 174, 0.08));
+    }
+
+    .center-rule {
+      background: var(--axis);
+    }
+
+    .butterfly-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+      min-height: 0;
+      position: relative;
+    }
+
+    .wing {
+      display: grid;
+      grid-template-rows: repeat(15, minmax(26px, 1fr));
+      padding: 10px;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .wing.up {
+      background:
+        repeating-linear-gradient(90deg, transparent 0 23%, rgba(216, 59, 49, 0.08) 23.2% 23.5%, transparent 23.7% 46%),
+        #fff;
+    }
+
+    .wing.down {
+      background:
+        repeating-linear-gradient(90deg, transparent 0 23%, rgba(24, 84, 174, 0.08) 23.2% 23.5%, transparent 23.7% 46%),
+        #fff;
+    }
+
+    .bar-row {
+      display: grid;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .bar-row.up {
+      grid-template-columns: 88px minmax(0, 1fr);
+    }
+
+    .bar-row.down {
+      grid-template-columns: minmax(0, 1fr) 88px;
+    }
+
+    .stock-label {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar-row.up .stock-label {
+      text-align: left;
+      padding-right: 10px;
+    }
+
+    .bar-row.down .stock-label {
+      text-align: right;
+      padding-left: 10px;
+    }
+
+    .stock-label strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      line-height: 1.15;
+      font-weight: 820;
+    }
+
+    .stock-label span {
+      font-size: 11px;
+      line-height: 1.15;
+      font-weight: 760;
+    }
+
+    .stock-label .up-value {
+      color: var(--up);
+    }
+
+    .stock-label .down-value {
+      color: var(--down);
+    }
+
+    .bar-track {
+      position: relative;
+      height: 22px;
+      min-width: 0;
+    }
+
+    .bar {
+      position: absolute;
+      top: 0;
+      height: 22px;
+      min-width: 4px;
+      border-radius: 5px;
+      box-shadow: inset 0 -10px 18px rgba(0, 0, 0, 0.08), 0 3px 8px rgba(25, 33, 43, 0.08);
+    }
+
+    .bar.up {
+      right: 0;
+      background: linear-gradient(90deg, var(--up-soft), #e62720);
+    }
+
+    .bar.down {
+      left: 0;
+      background: linear-gradient(90deg, var(--down), var(--down-soft));
+    }
+
+    .volume-label {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 820;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .bar.up .volume-label {
+      left: -8px;
+      transform: translate(-100%, -50%);
+      color: var(--up);
+    }
+
+    .bar.down .volume-label {
+      right: -8px;
+      transform: translate(100%, -50%);
+      color: var(--down);
+    }
+
+    @media (max-width: 1180px) {
+      .intraday-row {
+        grid-template-columns: 1fr;
+      }
+
+      .butterfly-card,
+      .trajectory-shell {
+        height: auto;
+        min-height: 420px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(100vw - 18px, 720px);
+      }
+
+      .topbar,
+      .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .butterfly-card {
+        overflow-x: auto;
+      }
+
+      .butterfly-head,
+      .butterfly-body,
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <h1>盤中列：左側排名軌跡，右側強弱勢排序</h1>
+      <span class="meta">Demo data：股票期貨 watchlist Top50 取樣</span>
+    </header>
+
+    <section class="intraday-row" aria-label="排名軌跡與強弱勢排序">
+      <div class="panel">
+        <section class="section-head">
+          <h2>排名軌跡</h2>
+          <span>08:45 起，每 15 分鐘截點</span>
+        </section>
+        <div class="trajectory-shell">
+          <svg viewBox="0 0 820 390" role="img" aria-label="排名軌跡示意">
+            <rect x="74" y="34" width="716" height="294" fill="none" stroke="#d7dde5"></rect>
+            <line x1="432" y1="34" x2="432" y2="328" stroke="#26313f" stroke-width="1.2"></line>
+            <line x1="74" y1="181" x2="790" y2="181" stroke="#26313f" stroke-width="1"></line>
+            <path d="M182 212 L245 186 L316 170 L372 143 L435 132" fill="none" stroke="#d83b31" stroke-width="2.4"></path>
+            <path d="M520 140 L555 168 L622 207 L676 224" fill="none" stroke="#1854ae" stroke-width="2.4"></path>
+            <circle cx="435" cy="132" r="14" fill="#d83b31" opacity="0.9"></circle>
+            <circle cx="676" cy="224" r="11" fill="#1854ae" opacity="0.88"></circle>
+            <text x="452" y="127" fill="#19212b" font-size="13" font-weight="800">國巨</text>
+            <text x="692" y="229" fill="#19212b" font-size="13" font-weight="800">緯創</text>
+          </svg>
+          <div class="trajectory-empty">左側保留既有排名軌跡區塊</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <section class="section-head">
+          <h2>強弱勢排序</h2>
+        </section>
+        <section class="butterfly-card" aria-label="強弱勢排序">
+          <div class="butterfly-head">
+            <div class="wing-title up">強勢股</div>
+            <div class="center-rule"></div>
+            <div class="wing-title down">弱勢股</div>
+          </div>
+          <div class="butterfly-body">
+            <div class="wing up" id="up-wing"></div>
+            <div class="center-rule"></div>
+            <div class="wing down" id="down-wing"></div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const watchlistTop50 = [
+      { stock_name: "國巨", spread_per: 2.52, volume: 61128 },
+      { stock_name: "台積電", spread_per: -1.26, volume: 46816 },
+      { stock_name: "群創", spread_per: 8.77, volume: 33170 },
+      { stock_name: "華邦電", spread_per: -1.27, volume: 28619 },
+      { stock_name: "力積電", spread_per: -0.57, volume: 18557 },
+      { stock_name: "元大台灣50", spread_per: -0.19, volume: 18822 },
+      { stock_name: "聯發科", spread_per: -2.52, volume: 16151 },
+      { stock_name: "群聯", spread_per: -3.56, volume: 12636 },
+      { stock_name: "友達", spread_per: 9.96, volume: 11827 },
+      { stock_name: "穩懋", spread_per: 2.91, volume: 12029 },
+      { stock_name: "彩晶", spread_per: 10.00, volume: 4630 },
+      { stock_name: "旺宏", spread_per: -4.19, volume: 8507 },
+      { stock_name: "環球晶", spread_per: 1.88, volume: 6993 },
+      { stock_name: "南電", spread_per: -2.77, volume: 7373 },
+      { stock_name: "台達電", spread_per: -3.58, volume: 7149 },
+      { stock_name: "合晶", spread_per: 3.67, volume: 6918 },
+      { stock_name: "南亞", spread_per: 9.09, volume: 6581 },
+      { stock_name: "長榮", spread_per: -5.15, volume: 4156 },
+      { stock_name: "緯創", spread_per: 1.57, volume: 3303 },
+      { stock_name: "長榮航", spread_per: 0.75, volume: 2927 }
+    ];
+
+    const maxVolume = Math.max(...watchlistTop50.map((row) => row.volume), 1);
+    const upRows = watchlistTop50
+      .filter((row) => row.spread_per > 0)
+      .sort((a, b) => b.spread_per - a.spread_per)
+      .slice(0, 15);
+    const downRows = watchlistTop50
+      .filter((row) => row.spread_per < 0)
+      .sort((a, b) => a.spread_per - b.spread_per)
+      .slice(0, 15);
+
+    function formatVolume(value) {
+      return Number(value || 0).toLocaleString("zh-TW");
+    }
+
+    function formatPercent(value) {
+      const sign = value > 0 ? "+" : "";
+      return `${sign}${Number(value).toFixed(2)}%`;
+    }
+
+    function renderRows(targetId, rows, direction) {
+      const target = document.getElementById(targetId);
+      target.innerHTML = rows.map((row) => {
+        const width = Math.max(2, row.volume / maxVolume * 100);
+        const valueClass = direction === "up" ? "up-value" : "down-value";
+        const label = `<div class="stock-label"><strong>${row.stock_name}</strong><span class="${valueClass}">${formatPercent(row.spread_per)}</span></div>`;
+        const bar = `<div class="bar-track"><div class="bar ${direction}" style="width:${width.toFixed(2)}%"><span class="volume-label">${formatVolume(row.volume)}</span></div></div>`;
+        return `<div class="bar-row ${direction}">${direction === "up" ? label + bar : bar + label}</div>`;
+      }).join("");
+    }
+
+    renderRows("up-wing", upRows, "up");
+    renderRows("down-wing", downRows, "down");
+  </script>
+</body>
+</html>

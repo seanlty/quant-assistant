@@ -1,0 +1,1128 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>股期排名視覺 Prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #d7dde4;
+      --line-soft: #e8edf2;
+      --text: #18212b;
+      --muted: #647386;
+      --red: #d73d3d;
+      --green: #16845f;
+      --amber: #a76b00;
+      --blue: #2765bf;
+      --ink: #29323d;
+      --shadow: 0 10px 28px rgba(20, 31, 44, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft JhengHei", "Noto Sans TC", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .shell {
+      width: min(1420px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 18px 0 28px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 48px;
+      margin-bottom: 14px;
+    }
+
+    .title-block {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      font-weight: 800;
+      color: var(--ink);
+    }
+
+    .meta {
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      border-radius: 6px;
+    }
+
+    button {
+      border: 1px solid #1f3d66;
+      background: #1f3d66;
+      color: #fff;
+      border-radius: 6px;
+      min-height: 34px;
+      padding: 0 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #183253;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .main-stack {
+      display: grid;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .section,
+    .side-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .section-head,
+    .side-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 48px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .section-title,
+    .side-title {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.3;
+      font-weight: 800;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      background: #fbfcfd;
+      white-space: nowrap;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      min-width: 1120px;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--line-soft);
+      vertical-align: middle;
+    }
+
+    th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 700;
+      background: #fbfcfd;
+      white-space: nowrap;
+    }
+
+    tbody tr:hover {
+      background: #f8fafc;
+    }
+
+    .number {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .rank-cell {
+      width: 42px;
+      color: var(--muted);
+    }
+
+    .stock-cell {
+      width: 170px;
+    }
+
+    .rank-strip-cell {
+      width: 160px;
+    }
+
+    .stock {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .stock strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+    }
+
+    .stock span {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .rank-strip {
+      display: block;
+      align-items: center;
+      min-height: 32px;
+    }
+
+    .rank-pills {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
+    }
+
+    .rank-pill {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 26px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      color: #18212b;
+      background: #eef2f6;
+      border: 1px solid #dce3ea;
+    }
+
+    .rank-pill.hot {
+      background: #ffe6e3;
+      border-color: #f4b4ad;
+      color: #9b2626;
+      font-weight: 800;
+    }
+
+    .rank-pill.warm {
+      background: #fff0cf;
+      border-color: #e5c777;
+      color: #7d5300;
+      font-weight: 700;
+    }
+
+    .delta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      min-width: 52px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .up {
+      color: var(--red);
+    }
+
+    .down {
+      color: var(--green);
+    }
+
+    .flat {
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      min-width: 54px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .badge.new {
+      background: #ffe6e3;
+      color: #9b2626;
+    }
+
+    .badge.hold {
+      background: #e9f1ff;
+      color: #1f55a3;
+    }
+
+    .badge.fade {
+      background: #e7f5ef;
+      color: #116b4d;
+    }
+
+    .side-panel {
+      position: sticky;
+      top: 14px;
+    }
+
+    .mover-groups {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .rule-box {
+      margin: 10px 10px 0;
+      padding: 10px;
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      background: #fbfcfd;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .rule-box strong {
+      color: var(--ink);
+    }
+
+    .quadrant-body {
+      padding: 12px 14px 14px;
+    }
+
+    .quadrant-chart {
+      width: 100%;
+      height: auto;
+      min-height: 340px;
+      display: block;
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .quad-bg.up-up {
+      fill: #fff1f0;
+    }
+
+    .quad-bg.up-down {
+      fill: #fff8e8;
+    }
+
+    .quad-bg.down-up {
+      fill: #edf6ff;
+    }
+
+    .quad-bg.down-down {
+      fill: #eef8f3;
+    }
+
+    .axis-line {
+      stroke: #9aa8b7;
+      stroke-width: 1.2;
+    }
+
+    .axis-label,
+    .quad-label,
+    .bubble-text,
+    .bubble-rank {
+      font-family: "Microsoft JhengHei", "Noto Sans TC", Arial, sans-serif;
+    }
+
+    .axis-label {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+
+    .quad-label {
+      fill: #384655;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .bubble {
+      fill-opacity: 0.78;
+      stroke: #fff;
+      stroke-width: 2;
+    }
+
+    .bubble.up-up {
+      fill: var(--red);
+    }
+
+    .bubble.up-down {
+      fill: var(--amber);
+    }
+
+    .bubble.down-up {
+      fill: var(--blue);
+    }
+
+    .bubble.down-down {
+      fill: var(--green);
+    }
+
+    .bubble-text {
+      fill: #18212b;
+      font-size: 11px;
+      font-weight: 800;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 3px;
+      stroke-linejoin: round;
+    }
+
+    .bubble-rank {
+      fill: #fff;
+      font-size: 11px;
+      font-weight: 800;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+    }
+
+    .trail {
+      fill: none;
+      stroke: #6d7b8a;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-opacity: 0.34;
+      stroke-dasharray: 4 5;
+    }
+
+    .trail-dot {
+      fill: #fff;
+      stroke: #8d9bab;
+      stroke-width: 1.5;
+      opacity: 0.72;
+    }
+
+    .trail-dot.current {
+      fill: #1f3d66;
+      stroke: #1f3d66;
+      opacity: 1;
+    }
+
+    .trail-dot.future {
+      opacity: 0.18;
+    }
+
+    .motion-arrow {
+      fill: #1f3d66;
+      opacity: 0.52;
+      pointer-events: none;
+    }
+
+    .quadrant-note {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .mover-group {
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .group-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 34px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line-soft);
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--ink);
+      background: #fbfcfd;
+    }
+
+    .group-title span:last-child {
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .mover-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 54px 58px;
+      gap: 8px;
+      align-items: center;
+      min-height: 54px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .mover-row:last-child {
+      border-bottom: 0;
+    }
+
+    .mover-name {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .mover-name strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .mover-name span {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rank-now {
+      display: grid;
+      justify-items: end;
+      gap: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .rank-now strong {
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .rank-now span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .volume-bar {
+      height: 5px;
+      background: #edf1f5;
+      border-radius: 999px;
+      overflow: hidden;
+      grid-column: 1 / -1;
+    }
+
+    .volume-bar i {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: #1f3d66;
+    }
+
+    .footnote {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1080px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .side-panel {
+        position: static;
+      }
+
+      .mover-groups {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .shell {
+        width: min(100vw - 20px, 1420px);
+        padding-top: 12px;
+      }
+
+      .topbar,
+      .section-head,
+      .side-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .actions,
+      .chips {
+        justify-content: flex-start;
+      }
+
+      .mover-groups {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="title-block">
+        <h1>股期排名視覺 Prototype</h1>
+        <span class="meta" id="snapshot-label">2026-06-17 09:35 模擬刷新</span>
+      </div>
+      <div class="actions">
+        <span class="status" id="refresh-status">盤中排名快照 1 / 3</span>
+        <button type="button" id="next-refresh">模擬下一次刷新</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <div class="main-stack">
+        <section class="section" aria-label="大小型股期排行展示">
+          <div class="section-head">
+            <h2 class="section-title">大小型股期股池</h2>
+            <div class="chips">
+              <span class="chip">近 5 日口數排名條</span>
+              <span class="chip">盤中排名變化</span>
+              <span class="chip">08:45 起累積</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="rank-cell">#</th>
+                  <th class="stock-cell">股票</th>
+                  <th class="number">收盤價</th>
+                  <th class="number">漲跌幅%</th>
+                  <th class="number">ATR20%</th>
+                  <th class="rank-strip-cell">近 5 日排名</th>
+                  <th class="number">盤中變化</th>
+                  <th class="number">開盤累積</th>
+                  <th>狀態</th>
+                  <th class="number">累積口數</th>
+                </tr>
+              </thead>
+              <tbody id="pool-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" aria-label="盤中軌跡">
+          <div class="section-head">
+            <h2 class="section-title">盤中軌跡</h2>
+            <div class="chips">
+              <span class="chip" id="quadrant-time">08:45 → 09:00</span>
+              <span class="chip">泡泡大小 = 開盤累積排名變化</span>
+            </div>
+          </div>
+          <div class="quadrant-body">
+            <svg class="quadrant-chart" id="quadrant-chart" viewBox="0 0 820 390" role="img" aria-label="價量四象限泡泡圖"></svg>
+            <p class="quadrant-note">X 軸為目前漲跌幅；Y 軸為累積成交口數相對 08:45 起第一段均速的變化率。虛線是 08:45 到目前截點的移動軌跡，泡泡內數字是目前口數排名，泡泡越大代表從 08:45 起排名變化越大。</p>
+          </div>
+        </section>
+      </div>
+
+      <aside class="side-panel" aria-label="盤中 Top Movers">
+        <div class="side-head">
+          <h2 class="side-title">盤中 Top Movers</h2>
+          <span class="chip" id="mover-time">08:45 → 09:00</span>
+        </div>
+        <div class="rule-box">
+          <strong>截斷周期：</strong>自 08:45 開盤起，每 15 分鐘切一格；Top Movers 比較相鄰兩個截點，累積變化比較 08:45 到目前截點。<br>
+          <strong>狀態判定：</strong>排名數字越小越強；變化值 = 前次排名 - 目前排名。跨入 Top 50 為新進，+8 名以上為急升，-8 名以下為轉弱，其餘為穩定。
+        </div>
+        <div class="mover-groups" id="mover-groups"></div>
+        <div class="mover-groups" id="cumulative-groups"></div>
+      </aside>
+    </div>
+
+    <p class="footnote">展示頁使用現有 cache 的標的名稱與數值作為樣本，排名序列為 prototype 假資料；未連接 `/api/pool`。</p>
+  </main>
+
+  <script>
+    const cutoffs = ["08:45", "09:00", "09:15", "09:30", "09:45", "10:00"];
+    const marketOpen = cutoffs[0];
+
+    const baseRows = [
+      { stock_id: "6488", stock_name: "環球晶", futures_id: "PBF", close: 1030, atr: 8.35, avg_volume: 5647, type: "small", ranks: [42, 35, 28, 21, 15], rankTimeline: [64, 42, 31, 15, 9, 6], volumeTimeline: [0, 760, 1600, 3200, 4700, 5900], changeTimeline: [0, -0.4, -0.9, -1.8, -2.6, -3.3] },
+      { stock_id: "2327", stock_name: "國巨", futures_id: "QEF", close: 942, atr: 8.21, avg_volume: 57542, type: "small", ranks: [3, 2, 1, 2, 3], rankTimeline: [5, 4, 3, 3, 2, 2], volumeTimeline: [0, 14200, 25500, 39800, 50200, 58000], changeTimeline: [0, -0.3, -0.7, -1.0, -1.3, -1.2] },
+      { stock_id: "8046", stock_name: "南電", futures_id: "QSF", close: 895, atr: 8.04, avg_volume: 6756, type: "small", ranks: [48, 41, 29, 22, 18], rankTimeline: [58, 39, 18, 12, 11, 10], volumeTimeline: [0, 900, 2200, 4300, 5900, 7000], changeTimeline: [0, 0.2, -0.1, -0.3, -0.8, -1.0] },
+      { stock_id: "2454", stock_name: "聯發科", futures_id: "PUF", close: 4515, atr: 7.61, avg_volume: 15233, type: "small", ranks: [9, 8, 7, 9, 8], rankTimeline: [12, 10, 8, 7, 8, 7], volumeTimeline: [0, 3300, 6100, 9200, 12800, 15400], changeTimeline: [0, 0.4, 0.2, -0.2, -0.7, -1.0] },
+      { stock_id: "8299", stock_name: "群聯", futures_id: "QNF", close: 2355, atr: 7.59, avg_volume: 11803, type: "small", ranks: [27, 18, 14, 12, 10], rankTimeline: [33, 22, 10, 5, 4, 4], volumeTimeline: [0, 2300, 5100, 8200, 10400, 12100], changeTimeline: [0, 0.5, 0.1, -0.4, -0.9, -1.3] },
+      { stock_id: "2308", stock_name: "台達電", futures_id: "RVF", close: 2225, atr: 6.72, avg_volume: 6830, type: "small", ranks: [18, 17, 16, 22, 29], rankTimeline: [11, 16, 29, 33, 36, 39], volumeTimeline: [0, 2100, 3800, 5400, 6100, 6900], changeTimeline: [0, 0.2, -0.1, -0.3, -0.6, -0.5] },
+      { stock_id: "2303", stock_name: "聯電", futures_id: "CCF", close: 138.5, atr: 10.61, avg_volume: 68300, type: "regular", ranks: [8, 6, 4, 3, 1], rankTimeline: [8, 6, 1, 1, 1, 1], volumeTimeline: [0, 18800, 36000, 52000, 62500, 69000], changeTimeline: [0, -0.4, -1.1, -1.9, -2.2, -2.0] },
+      { stock_id: "6116", stock_name: "彩晶", futures_id: "OEF", close: 16.5, atr: 9.92, avg_volume: 3657, type: "regular", ranks: [76, 62, 48, 40, 31], rankTimeline: [70, 61, 31, 24, 20, 18], volumeTimeline: [0, 520, 1100, 1900, 2900, 3700], changeTimeline: [0, 0.1, 0.0, 0.2, 0.1, 0.0] },
+      { stock_id: "3481", stock_name: "群創", futures_id: "DQF", close: 53.1, atr: 9.69, avg_volume: 29900, type: "regular", ranks: [17, 10, 8, 7, 4], rankTimeline: [20, 18, 4, 4, 5, 5], volumeTimeline: [0, 8900, 17800, 24200, 28700, 30200], changeTimeline: [0, 0.6, 0.2, -0.4, -0.9, -1.0] },
+      { stock_id: "2409", stock_name: "友達", futures_id: "CHF", close: 23.25, atr: 9.68, avg_volume: 10075, type: "regular", ranks: [13, 12, 10, 12, 13], rankTimeline: [9, 11, 13, 16, 18, 19], volumeTimeline: [0, 4300, 6100, 7800, 9200, 10100], changeTimeline: [0, 1.0, 0.8, 0.7, 0.5, 0.6] },
+      { stock_id: "6770", stock_name: "力積電", futures_id: "QZF", close: 70.4, atr: 9.55, avg_volume: 17180, type: "regular", ranks: [24, 17, 12, 9, 5], rankTimeline: [28, 21, 5, 3, 2, 2], volumeTimeline: [0, 4300, 9100, 13400, 16000, 17400], changeTimeline: [0, 0.2, 0.0, -0.1, 0.0, 0.2] },
+      { stock_id: "6182", stock_name: "合晶", futures_id: "PLF", close: 109, atr: 8.01, avg_volume: 5207, type: "regular", ranks: [34, 30, 27, 25, 30], rankTimeline: [22, 26, 30, 42, 47, 52], volumeTimeline: [0, 1600, 2300, 3200, 4400, 5200], changeTimeline: [0, -0.1, 0.0, 0.1, 0.0, 0.0] }
+    ];
+
+    let step = 0;
+    let quadrantInitialized = false;
+    let lastRenderedStep = null;
+    const lastQuadrantPoints = new Map();
+    const quadrantAnimations = new Map();
+
+    function currentIndex() {
+      return step + 1;
+    }
+
+    function currentContext() {
+      const index = currentIndex();
+      return {
+        current: cutoffs[index],
+        previous: cutoffs[index - 1],
+        range: `${cutoffs[index - 1]} → ${cutoffs[index]}`,
+        cumulativeRange: `${marketOpen} → ${cutoffs[index]}`,
+        snapshot: `2026-06-17 ${cutoffs[index]} 模擬刷新`,
+        status: `盤中排名快照 ${index} / ${cutoffs.length - 1}`
+      };
+    }
+
+    function formatNumber(value, digits = 0) {
+      return Number(value).toLocaleString("zh-TW", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+      });
+    }
+
+    function formatPercent(value) {
+      const number = Number(value);
+      return `${number > 0 ? "+" : ""}${formatNumber(number, 2)}%`;
+    }
+
+    function deltaClass(delta) {
+      if (delta > 0) return "up";
+      if (delta < 0) return "down";
+      return "flat";
+    }
+
+    function deltaText(delta) {
+      if (delta > 0) return `▲ ${delta}`;
+      if (delta < 0) return `▼ ${Math.abs(delta)}`;
+      return "－";
+    }
+
+    function rankPillClass(rank) {
+      if (rank <= 10) return "rank-pill hot";
+      if (rank <= 25) return "rank-pill warm";
+      return "rank-pill";
+    }
+
+    function badgeFor(row, prevRank, currentRank, delta) {
+      if (prevRank > 50 && currentRank <= 50) return `<span class="badge new">新進</span>`;
+      if (delta >= 8) return `<span class="badge new">急升</span>`;
+      if (delta <= -8) return `<span class="badge fade">轉弱</span>`;
+      return `<span class="badge hold">穩定</span>`;
+    }
+
+    function quadrantClass(row) {
+      const priceUp = row.spread_per >= 0;
+      const volumeUp = row.volumeRate >= 0;
+      if (priceUp && volumeUp) return "up-up";
+      if (priceUp && !volumeUp) return "up-down";
+      if (!priceUp && volumeUp) return "down-up";
+      return "down-down";
+    }
+
+    function quadrantText(row) {
+      const label = quadrantClass(row);
+      if (label === "up-up") return "價漲量漲";
+      if (label === "up-down") return "價漲量縮";
+      if (label === "down-up") return "價跌量漲";
+      return "價跌量縮";
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function rowAtIndex(row, index) {
+      const previousIndex = Math.max(0, index - 1);
+      const ranks = row.ranks;
+      const openRank = row.rankTimeline[0];
+      const prevRank = row.rankTimeline[previousIndex];
+      const currentRank = row.rankTimeline[index];
+      const delta = prevRank - currentRank;
+      const deltaOpen = openRank - currentRank;
+      const previousVolume = row.volumeTimeline[previousIndex];
+      const currentVolume = row.volumeTimeline[index];
+      const openingSegmentVolume = Math.max(1, row.volumeTimeline[1] - row.volumeTimeline[0]);
+      const expectedVolume = openingSegmentVolume * index;
+      const volumeRate = index === 0 ? 0 : (currentVolume - expectedVolume) / expectedVolume * 100;
+      return {
+        ...row,
+        ranks,
+        prevRank,
+        currentRank,
+        openRank,
+        delta,
+        deltaOpen,
+        previousVolume,
+        currentVolume,
+        volumeDelta: currentVolume - previousVolume,
+        volumeRate,
+        spread_per: row.changeTimeline[index]
+      };
+    }
+
+    function rowAtStep(row) {
+      return rowAtIndex(row, currentIndex());
+    }
+
+    function renderTable() {
+      const rows = baseRows.map(rowAtStep).sort((a, b) => a.currentRank - b.currentRank);
+      document.getElementById("pool-body").innerHTML = rows.map((row, index) => {
+        const rankStrip = `
+          <div class="rank-strip">
+            <div class="rank-pills">
+              ${row.ranks.map((rank) => `<span class="${rankPillClass(rank)}">${rank}</span>`).join("")}
+            </div>
+          </div>`;
+        return `<tr>
+          <td class="number rank-cell">${index + 1}</td>
+          <td class="stock-cell"><div class="stock"><strong>${row.stock_name}</strong><span>${row.stock_id} / ${row.futures_id} / ${row.type === "small" ? "小型" : "大型"}</span></div></td>
+          <td class="number">${formatNumber(row.close, row.close >= 500 ? 0 : 2)}</td>
+          <td class="number ${deltaClass(row.spread_per)}">${formatPercent(row.spread_per)}</td>
+          <td class="number">${formatNumber(row.atr, 2)}%</td>
+          <td class="rank-strip-cell">${rankStrip}</td>
+          <td class="number"><span class="delta ${deltaClass(row.delta)}">${deltaText(row.delta)}</span></td>
+          <td class="number"><span class="delta ${deltaClass(row.deltaOpen)}">${deltaText(row.deltaOpen)}</span></td>
+          <td>${badgeFor(row, row.prevRank, row.currentRank, row.delta)}</td>
+          <td class="number">${formatNumber(row.currentVolume, 0)}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderMovers() {
+      const rows = baseRows.map(rowAtStep);
+      const maxVolume = Math.max(...rows.map((row) => row.currentVolume));
+      const isNewTopN = (row) => row.prevRank > 50 && row.currentRank <= 50;
+      const groups = [
+        { key: "up", title: "急升", rows: rows.filter((row) => row.delta >= 8 && !isNewTopN(row)).sort((a, b) => b.delta - a.delta).slice(0, 4) },
+        { key: "new", title: "新進 Top N", rows: rows.filter(isNewTopN).sort((a, b) => a.currentRank - b.currentRank).slice(0, 4) },
+        { key: "down", title: "轉弱", rows: rows.filter((row) => row.delta <= -8).sort((a, b) => a.delta - b.delta).slice(0, 4) }
+      ];
+
+      document.getElementById("mover-groups").innerHTML = groups.map((group) => `
+        <div class="mover-group">
+          <div class="group-title"><span>${group.title}</span><span>${group.rows.length}</span></div>
+          ${group.rows.length ? group.rows.map((row) => {
+            const bar = Math.max(7, row.currentVolume / maxVolume * 100);
+            return `<div class="mover-row">
+              <div class="mover-name"><strong>${row.stock_name}</strong><span>${row.prevRank} → ${row.currentRank} / ${formatNumber(row.currentVolume, 0)} 口</span></div>
+              <div class="rank-now"><strong>${row.currentRank}</strong><span>目前</span></div>
+              <div class="delta ${deltaClass(row.delta)}">${deltaText(row.delta)}</div>
+              <div class="volume-bar"><i style="width:${bar.toFixed(1)}%"></i></div>
+            </div>`;
+          }).join("") : `<div class="mover-row"><div class="mover-name"><strong>-</strong><span>無符合項目</span></div><div></div><div></div></div>`}
+        </div>
+      `).join("");
+    }
+
+    function renderCumulative() {
+      const rows = baseRows
+        .map(rowAtStep)
+        .sort((a, b) => Math.abs(b.deltaOpen) - Math.abs(a.deltaOpen))
+        .slice(0, 5);
+      const maxVolume = Math.max(...rows.map((row) => row.currentVolume));
+      document.getElementById("cumulative-groups").innerHTML = `
+        <div class="mover-group">
+          <div class="group-title"><span>08:45 起累積變化</span><span>${currentContext().cumulativeRange}</span></div>
+          ${rows.map((row) => {
+            const bar = Math.max(7, row.currentVolume / maxVolume * 100);
+            return `<div class="mover-row">
+              <div class="mover-name"><strong>${row.stock_name}</strong><span>${row.openRank} → ${row.currentRank} / ${formatNumber(row.currentVolume, 0)} 口</span></div>
+              <div class="rank-now"><strong>${row.currentRank}</strong><span>目前</span></div>
+              <div class="delta ${deltaClass(row.deltaOpen)}">${deltaText(row.deltaOpen)}</div>
+              <div class="volume-bar"><i style="width:${bar.toFixed(1)}%"></i></div>
+            </div>`;
+          }).join("")}
+        </div>`;
+    }
+
+    function quadrantScale() {
+      const width = 820;
+      const height = 390;
+      const left = 74;
+      const right = 30;
+      const top = 34;
+      const bottom = 62;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const changes = baseRows.flatMap((row) => row.changeTimeline.map((value) => Math.abs(value)));
+      const volumeRates = [];
+      baseRows.forEach((row) => {
+        for (let index = 1; index < cutoffs.length; index += 1) {
+          volumeRates.push(Math.abs(rowAtIndex(row, index).volumeRate));
+        }
+      });
+      const xMax = Math.max(4, Math.ceil(Math.max(...changes) + 0.5));
+      const yMax = Math.max(80, Math.ceil(Math.max(...volumeRates) / 20) * 20);
+      const x = (value) => left + ((value + xMax) / (xMax * 2)) * plotWidth;
+      const y = (value) => top + ((yMax - value) / (yMax * 2)) * plotHeight;
+      return {
+        width,
+        height,
+        left,
+        right,
+        top,
+        bottom,
+        plotWidth,
+        plotHeight,
+        xMax,
+        yMax,
+        x,
+        y,
+        zeroX: x(0),
+        zeroY: y(0),
+        xMin: left,
+        xRight: left + plotWidth,
+        yTop: top,
+        yBottom: top + plotHeight,
+      };
+    }
+
+    function quadrantPoint(row, index, scale) {
+      const snapshot = rowAtIndex(row, index);
+      const cx = clamp(scale.x(snapshot.spread_per), scale.xMin + 10, scale.xRight - 10);
+      const cy = clamp(scale.y(snapshot.volumeRate), scale.yTop + 12, scale.yBottom - 12);
+      const radius = 8 + Math.min(18, Math.abs(snapshot.deltaOpen) * 0.45);
+      const labelX = clamp(cx + radius + 5, scale.xMin + 24, scale.xRight - 40);
+      const labelY = clamp(cy - 6, scale.yTop + 12, scale.yBottom - 8);
+      return {
+        ...snapshot,
+        cx,
+        cy,
+        radius,
+        labelX,
+        labelY,
+        cls: quadrantClass(snapshot),
+      };
+    }
+
+    function trailArrow(points) {
+      if (points.length < 2) return "";
+      const from = points[points.length - 2];
+      const to = points[points.length - 1];
+      const angle = Math.atan2(to.cy - from.cy, to.cx - from.cx);
+      const size = 7;
+      const wing = 0.75;
+      const p1 = `${to.cx.toFixed(1)},${to.cy.toFixed(1)}`;
+      const p2 = `${(to.cx - Math.cos(angle - wing) * size).toFixed(1)},${(to.cy - Math.sin(angle - wing) * size).toFixed(1)}`;
+      const p3 = `${(to.cx - Math.cos(angle + wing) * size).toFixed(1)},${(to.cy - Math.sin(angle + wing) * size).toFixed(1)}`;
+      return `<polygon class="motion-arrow" points="${p1} ${p2} ${p3}"></polygon>`;
+    }
+
+    function easeOutCubic(value) {
+      return 1 - Math.pow(1 - value, 3);
+    }
+
+    function mix(start, end, progress) {
+      return start + (end - start) * progress;
+    }
+
+    function animateBubble(row, group, from, to) {
+      const existingFrame = quadrantAnimations.get(row.stock_id);
+      if (existingFrame) {
+        cancelAnimationFrame(existingFrame);
+      }
+      const circle = group.querySelector("circle");
+      const rank = group.querySelector(".bubble-rank");
+      const label = group.querySelector(".bubble-text");
+      const duration = 620;
+      const startedAt = performance.now();
+
+      function drawFrame(now) {
+        const raw = Math.min(1, (now - startedAt) / duration);
+        const progress = easeOutCubic(raw);
+        const cx = mix(from.cx, to.cx, progress);
+        const cy = mix(from.cy, to.cy, progress);
+        const radius = mix(from.radius, to.radius, progress);
+        const labelX = mix(from.labelX, to.labelX, progress);
+        const labelY = mix(from.labelY, to.labelY, progress);
+
+        circle.setAttribute("cx", cx.toFixed(1));
+        circle.setAttribute("cy", cy.toFixed(1));
+        circle.setAttribute("r", radius.toFixed(1));
+        rank.setAttribute("x", cx.toFixed(1));
+        rank.setAttribute("y", cy.toFixed(1));
+        label.setAttribute("x", labelX.toFixed(1));
+        label.setAttribute("y", labelY.toFixed(1));
+
+        if (raw < 1) {
+          quadrantAnimations.set(row.stock_id, requestAnimationFrame(drawFrame));
+        } else {
+          quadrantAnimations.delete(row.stock_id);
+        }
+      }
+
+      quadrantAnimations.set(row.stock_id, requestAnimationFrame(drawFrame));
+    }
+
+    function renderTrailLayer(scale) {
+      const index = currentIndex();
+      return baseRows.map((row) => {
+        const points = [];
+        for (let pointIndex = 0; pointIndex <= index; pointIndex += 1) {
+          points.push(quadrantPoint(row, pointIndex, scale));
+        }
+        const path = points.map((point, pointIndex) => `${pointIndex ? "L" : "M"}${point.cx.toFixed(1)} ${point.cy.toFixed(1)}`).join(" ");
+        const dots = points.map((point, pointIndex) => {
+          const cls = pointIndex === index ? "trail-dot current" : "trail-dot";
+          return `<circle class="${cls}" cx="${point.cx.toFixed(1)}" cy="${point.cy.toFixed(1)}" r="${pointIndex === index ? 3.3 : 2.5}"></circle>`;
+        }).join("");
+        return `<g>
+          <path class="trail" d="${path}"></path>
+          ${dots}
+          ${trailArrow(points)}
+        </g>`;
+      }).join("");
+    }
+
+    function initializeQuadrant(scale) {
+      const svg = document.getElementById("quadrant-chart");
+      const bubbleGroups = baseRows.map((row) => {
+        const point = quadrantPoint(row, currentIndex(), scale);
+        lastQuadrantPoints.set(row.stock_id, point);
+        return `<g id="bubble-${row.stock_id}">
+          <title></title>
+          <circle class="bubble ${point.cls}" cx="${point.cx.toFixed(1)}" cy="${point.cy.toFixed(1)}" r="${point.radius.toFixed(1)}"></circle>
+          <text class="bubble-rank" x="${point.cx.toFixed(1)}" y="${point.cy.toFixed(1)}">${point.currentRank}</text>
+          <text class="bubble-text" x="${point.labelX.toFixed(1)}" y="${point.labelY.toFixed(1)}">${row.stock_name}</text>
+        </g>`;
+      }).join("");
+
+      svg.innerHTML = `
+        <rect class="quad-bg down-up" x="${scale.xMin}" y="${scale.yTop}" width="${scale.zeroX - scale.xMin}" height="${scale.zeroY - scale.yTop}"></rect>
+        <rect class="quad-bg up-up" x="${scale.zeroX}" y="${scale.yTop}" width="${scale.xRight - scale.zeroX}" height="${scale.zeroY - scale.yTop}"></rect>
+        <rect class="quad-bg down-down" x="${scale.xMin}" y="${scale.zeroY}" width="${scale.zeroX - scale.xMin}" height="${scale.yBottom - scale.zeroY}"></rect>
+        <rect class="quad-bg up-down" x="${scale.zeroX}" y="${scale.zeroY}" width="${scale.xRight - scale.zeroX}" height="${scale.yBottom - scale.zeroY}"></rect>
+        <line class="axis-line" x1="${scale.xMin}" y1="${scale.zeroY}" x2="${scale.xRight}" y2="${scale.zeroY}"></line>
+        <line class="axis-line" x1="${scale.zeroX}" y1="${scale.yTop}" x2="${scale.zeroX}" y2="${scale.yBottom}"></line>
+        <text class="quad-label" x="${scale.xMin + 12}" y="${scale.yTop + 22}">價跌量漲</text>
+        <text class="quad-label" x="${scale.zeroX + 12}" y="${scale.yTop + 22}">價漲量漲</text>
+        <text class="quad-label" x="${scale.xMin + 12}" y="${scale.yBottom - 14}">價跌量縮</text>
+        <text class="quad-label" x="${scale.zeroX + 12}" y="${scale.yBottom - 14}">價漲量縮</text>
+        <text class="axis-label" x="${scale.xMin}" y="${scale.height - 22}">-${scale.xMax}%</text>
+        <text class="axis-label" x="${scale.zeroX - 10}" y="${scale.height - 22}">0</text>
+        <text class="axis-label" x="${scale.xRight - 32}" y="${scale.height - 22}">+${scale.xMax}%</text>
+        <text class="axis-label" x="${scale.width / 2 - 42}" y="${scale.height - 10}">漲跌幅 %</text>
+        <text class="axis-label" x="12" y="${scale.yTop + 10}">+${scale.yMax}%</text>
+        <text class="axis-label" x="12" y="${scale.zeroY + 4}">口數基準</text>
+        <text class="axis-label" x="12" y="${scale.yBottom}">-${scale.yMax}%</text>
+        <g id="trail-layer"></g>
+        <g id="bubble-layer">${bubbleGroups}</g>`;
+      quadrantInitialized = true;
+    }
+
+    function renderQuadrant() {
+      const scale = quadrantScale();
+      if (!quadrantInitialized) {
+        initializeQuadrant(scale);
+      }
+      const svg = document.getElementById("quadrant-chart");
+      const trailLayer = svg.querySelector("#trail-layer");
+      const wrappedToStart = lastRenderedStep !== null && step < lastRenderedStep;
+      trailLayer.innerHTML = renderTrailLayer(scale);
+      baseRows.forEach((row) => {
+        const point = quadrantPoint(row, currentIndex(), scale);
+        const group = svg.querySelector(`#bubble-${row.stock_id}`);
+        if (!group) return;
+        const title = group.querySelector("title");
+        const circle = group.querySelector("circle");
+        const rank = group.querySelector(".bubble-rank");
+        const label = group.querySelector(".bubble-text");
+        title.textContent = `${row.stock_name}｜${quadrantText(point)}｜排名 ${point.openRank} → ${point.currentRank}｜漲跌幅 ${formatPercent(point.spread_per)}｜累積口數 ${formatNumber(point.currentVolume, 0)}`;
+        circle.setAttribute("class", `bubble ${point.cls}`);
+        rank.textContent = point.currentRank;
+        label.textContent = row.stock_name;
+        const previous = wrappedToStart ? point : (lastQuadrantPoints.get(row.stock_id) || point);
+        animateBubble(row, group, previous, point);
+        lastQuadrantPoints.set(row.stock_id, point);
+      });
+      lastRenderedStep = step;
+    }
+
+    function render() {
+      const label = currentContext();
+      document.getElementById("snapshot-label").textContent = label.snapshot;
+      document.getElementById("refresh-status").textContent = label.status;
+      document.getElementById("mover-time").textContent = label.range;
+      document.getElementById("quadrant-time").textContent = label.cumulativeRange;
+      renderTable();
+      renderMovers();
+      renderCumulative();
+      renderQuadrant();
+    }
+
+    document.getElementById("next-refresh").addEventListener("click", () => {
+      step = (step + 1) % (cutoffs.length - 1);
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
