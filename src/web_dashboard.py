@@ -4355,7 +4355,7 @@ def _render_table_rows(rows: List[Dict[str, object]]) -> str:
       <th>近 5 日排名 <span class="th-help" title="依每日股期成交口數排序，紅色為前 10、黃色為前 25" aria-label="近 5 日排名說明">!</span></th>
       <th>盤中變化 <span class="th-help" title="上一截點排名減目前排名；正值代表排名往前" aria-label="盤中變化說明">!</span></th>
       <th>開盤累積 <span class="th-help" title="08:45 第一個截點排名減目前排名；正值代表從開盤累積轉強" aria-label="開盤累積說明">!</span></th>
-      <th>狀態</th>
+      <th>狀態 <span class="th-help" title="依開盤第一個截點到最新截點的累積排名變化分類" aria-label="狀態說明">!</span></th>
     </tr>
   </thead>
   <tbody>
@@ -4690,7 +4690,7 @@ def _dashboard_script() -> str:
         <th>近 5 日排名 <span class="th-help" title="依每日股期成交口數排序，紅色為前 10、黃色為前 25" aria-label="近 5 日排名說明">!</span></th>
         <th>盤中變化 <span class="th-help" title="上一截點排名減目前排名；正值代表排名往前" aria-label="盤中變化說明">!</span></th>
         <th>開盤累積 <span class="th-help" title="08:45 第一個截點排名減目前排名；正值代表從開盤累積轉強" aria-label="開盤累積說明">!</span></th>
-        <th>狀態</th>
+        <th>狀態 <span class="th-help" title="依開盤第一個截點到最新截點的累積排名變化分類" aria-label="狀態說明">!</span></th>
       </tr>
     </thead>`;
   const newEntryTableHead = `
@@ -5248,13 +5248,13 @@ def _dashboard_script() -> str:
 
   function renderRankStatus(movement) {
     if (!movement) return '<span class="rank-status">等待</span>';
-    if (!movement.prevInTop && movement.currentInTop) {
+    if (!movement.openInTop && movement.currentInTop) {
       return '<span class="rank-status is-new">新進</span>';
     }
-    if (movement.delta >= 8) {
+    if (movement.deltaOpen >= 8) {
       return '<span class="rank-status is-surge">急升</span>';
     }
-    if (movement.delta <= -8) {
+    if (movement.deltaOpen <= -8) {
       return '<span class="rank-status is-fade">轉弱</span>';
     }
     return '<span class="rank-status">穩定</span>';

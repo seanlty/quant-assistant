@@ -1748,7 +1748,8 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert 'id="pool-panel-new"' in html
     assert "<th>收盤價</th>\n      <th>漲跌幅%</th>\n      <th>ATR20%</th>" in html
     assert "<th>開盤累積" in html
-    assert "<th>狀態</th>" in html
+    assert "aria-label=\"狀態說明\"" in html
+    assert "依開盤第一個截點到最新截點的累積排名變化分類" in html
     assert "<th>股票</th>\n      <th>漲跌</th>\n      <th>漲跌%</th>\n      <th>成交口數</th>" in html
     assert "<th>收盤</th>\n      <th>類型</th>\n      <th>合約月份</th>" in html
     assert "<th>合約月份</th>\n      <th>日期</th>" in html
