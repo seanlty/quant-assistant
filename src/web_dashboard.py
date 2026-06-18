@@ -3481,15 +3481,26 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       </div>
     </section>
 
-    <section class="section-head">
-      <h2>股票期貨 Watchlist</h2>
-      <span>所有股票期貨產品，即時報價一律取近月契約</span>
+    <section class="pool-tabs-panel watchlist-tabs-panel" aria-label="股票期貨 Watchlist">
+      <div class="pool-tabs-header">
+        <div class="pool-tabs-title">
+          <h2>股票期貨 Watchlist</h2>
+          <span id="watchlist-tabs-subtitle">全部股票期貨產品，即時報價一律取近月契約</span>
+        </div>
+        <div class="pool-tab-list" role="tablist" aria-label="股票期貨 Watchlist 分類">
+          <button class="pool-tab is-active" id="watchlist-tab-all" type="button" role="tab" aria-selected="true" aria-controls="watchlist-panel" data-watchlist-tab="all">全部</button>
+          <button class="pool-tab" id="watchlist-tab-large" type="button" role="tab" aria-selected="false" aria-controls="watchlist-panel" data-watchlist-tab="regular">大型股期</button>
+          <button class="pool-tab" id="watchlist-tab-small" type="button" role="tab" aria-selected="false" aria-controls="watchlist-panel" data-watchlist-tab="small">小型股期</button>
+        </div>
+      </div>
+      <div class="pool-tab-panel" id="watchlist-panel" role="tabpanel" aria-labelledby="watchlist-tab-all" data-watchlist-panel="all">
+        <div class="scroll-frame">
+          <section class="table-wrap" id="watchlist-table-wrap" aria-label="股票期貨 watchlist">
+            {watchlist_content}
+          </section>
+        </div>
+      </div>
     </section>
-    <div class="scroll-frame">
-      <section class="table-wrap" id="watchlist-table-wrap" aria-label="股票期貨 watchlist">
-        {watchlist_content}
-      </section>
-    </div>
 
     <section class="footer">
       <span>合約資料 <span id="contract-rows">{contract_rows}</span> 筆</span>
@@ -4789,6 +4800,13 @@ def _dashboard_script() -> str:
     large: "大型股票期貨，價格 200 以下，口數與 ATR 條件達標",
     new: "前一交易日 50 名外，最新交易日進入口數 Top 50"
   };
+  const watchlistTabSubtitles = {
+    all: "全部股票期貨產品，即時報價一律取近月契約",
+    regular: "只顯示大型股票期貨標的",
+    small: "只顯示小型股票期貨標的"
+  };
+  let currentWatchlistRows = [];
+  let currentWatchlistTab = "all";
 
   function applyTheme(theme) {
     const nextTheme = theme === "dark" ? "dark" : "light";
@@ -6097,6 +6115,58 @@ def _dashboard_script() -> str:
     switchPoolTab("small");
   }
 
+  function watchlistTypeTokens(row) {
+    return String(row && (row.contract_type || row.contract_type_label) || "")
+      .split(/[,\s、，\\/]+/)
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function watchlistMatchesTab(row, tabName) {
+    if (tabName === "all") return true;
+    const tokens = watchlistTypeTokens(row);
+    if (tabName === "regular") {
+      return tokens.includes("regular") || tokens.includes("大型") || tokens.includes("大型股期");
+    }
+    if (tabName === "small") {
+      return tokens.includes("small") || tokens.includes("小型") || tokens.includes("小型股期");
+    }
+    return true;
+  }
+
+  function filterWatchlistRows(rows, tabName) {
+    const nextTab = watchlistTabSubtitles[tabName] ? tabName : "all";
+    return nextTab === "all" ? rows : rows.filter((row) => watchlistMatchesTab(row, nextTab));
+  }
+
+  function updateWatchlistTabs(tabName) {
+    const nextTab = watchlistTabSubtitles[tabName] ? tabName : "all";
+    currentWatchlistTab = nextTab;
+    document.querySelectorAll("[data-watchlist-tab]").forEach((button) => {
+      const active = button.dataset.watchlistTab === nextTab;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    const panel = document.getElementById("watchlist-panel");
+    if (panel) {
+      panel.dataset.watchlistPanel = nextTab;
+      panel.setAttribute("aria-labelledby", `watchlist-tab-${nextTab === "regular" ? "large" : nextTab}`);
+    }
+    setText("watchlist-tabs-subtitle", watchlistTabSubtitles[nextTab]);
+  }
+
+  function switchWatchlistTab(tabName) {
+    updateWatchlistTabs(tabName);
+    renderWatchlistTable(currentWatchlistRows);
+  }
+
+  function initWatchlistTabs() {
+    document.querySelectorAll("[data-watchlist-tab]").forEach((button) => {
+      button.addEventListener("click", () => switchWatchlistTab(button.dataset.watchlistTab));
+    });
+    updateWatchlistTabs("all");
+  }
+
   function renderPoolRows(rows, tableName) {
     if (!rows.length) {
       return emptyRender('<tr><td class="empty-row" colspan="9">今日沒有符合條件的標的</td></tr>');
@@ -6225,7 +6295,8 @@ def _dashboard_script() -> str:
   }
 
   function renderWatchlistTable(rows) {
-    const rendered = renderWatchlistRows(rows);
+    currentWatchlistRows = rows || [];
+    const rendered = renderWatchlistRows(filterWatchlistRows(currentWatchlistRows, currentWatchlistTab));
     renderTable("watchlist", "watchlist-table-wrap", watchlistTableHead, rendered.html, rendered.signatures);
   }
 
@@ -6353,6 +6424,7 @@ def _dashboard_script() -> str:
   initAtrFilter();
   initAsOfFilter();
   initPoolTabs();
+  initWatchlistTabs();
   loadCachedIntradayTrajectory().finally(() => loadPool());
   startRealtimeRanking();
 }());

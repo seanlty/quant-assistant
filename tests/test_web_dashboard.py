@@ -1865,6 +1865,12 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert "活潑股股期股池" not in html
     assert "高價股股期股池" not in html
     assert "股票期貨 Watchlist" in html
+    assert 'aria-label="股票期貨 Watchlist 分類"' in html
+    assert 'data-watchlist-tab="all"' in html
+    assert 'data-watchlist-tab="regular"' in html
+    assert 'data-watchlist-tab="small"' in html
+    assert 'id="watchlist-panel"' in html
+    assert "全部股票期貨產品，即時報價一律取近月契約" in html
     assert "股期檔數" in html
     assert "漲跌幅%" in html
     assert 'title="依每日股期成交口數排序，紅色為前 10、黃色為前 25"' in html
@@ -1936,6 +1942,13 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "renderTodayOverviewChart(payload.watchlist_rows || [])" in html
     assert "renderButterflyChart" in html
     assert "renderButterflyChart(payload.watchlist_rows || [])" in html
+    assert "initWatchlistTabs" in html
+    assert "switchWatchlistTab" in html
+    assert "filterWatchlistRows" in html
+    assert "watchlistMatchesTab" in html
+    assert "data-watchlist-tab" in html
+    assert 'regular: "只顯示大型股票期貨標的"' in html
+    assert 'small: "只顯示小型股票期貨標的"' in html
     assert "BUTTERFLY_SIDE_LIMIT = 15" in html
     assert "butterflyWingRows" in html
     assert "強勢股" in html
