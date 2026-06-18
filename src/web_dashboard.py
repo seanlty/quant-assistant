@@ -192,6 +192,59 @@ def is_taipei_post_close_quote_window(value: Optional[datetime] = None) -> bool:
     return minutes >= POST_CLOSE_QUOTE_START_MINUTE
 
 
+def _previous_weekday(value: date) -> date:
+    candidate = value - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _latest_cached_as_of_date_before(cache_dir: Optional[str], before_day: date) -> Optional[date]:
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return None
+    dates = []
+    for filename in os.listdir(cache_dir):
+        if not filename.endswith(".json"):
+            continue
+        prefix = ""
+        if filename.startswith("dashboard_asof"):
+            prefix = "dashboard_asof"
+        elif filename.startswith("trajectory_asof"):
+            prefix = "trajectory_asof"
+        if not prefix:
+            continue
+        date_text = filename[len(prefix):len(prefix) + 10]
+        cached_day = _normalize_date(date_text)
+        if cached_day is None or cached_day >= before_day:
+            continue
+        suffix = filename[len(prefix) + 10:]
+        if suffix.startswith("_intraday_"):
+            continue
+        dates.append(cached_day)
+    return max(dates) if dates else None
+
+
+def resolve_dashboard_as_of_date(
+    as_of_date: Optional[object] = None,
+    now: Optional[datetime] = None,
+    cache_dir: Optional[str] = None,
+) -> date:
+    explicit_as_of = _normalize_date(as_of_date)
+    if explicit_as_of is not None:
+        return explicit_as_of
+
+    current = now or taipei_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=TAIPEI_TZ)
+    current = current.astimezone(TAIPEI_TZ)
+    today = current.date()
+    minutes = current.hour * 60 + current.minute
+    if current.weekday() < 5 and minutes >= INTRADAY_OPEN_MINUTES:
+        return today
+
+    return _latest_cached_as_of_date_before(cache_dir, today) or _previous_weekday(today)
+
+
 def latest_closing_refresh_at(value: datetime, as_of_date: Optional[object]) -> Optional[datetime]:
     current = value
     if current.tzinfo is None:
@@ -440,7 +493,7 @@ def build_daily_pool_snapshot(
 
     now = taipei_now()
     today = now.date()
-    end_day = _normalize_date(end_date) or today
+    end_day = resolve_dashboard_as_of_date(end_date, now=now)
     if end_day > today:
         end_day = today
     live_intraday = end_day == today and is_taipei_trading_session(now)
@@ -3569,11 +3622,11 @@ class DashboardCache:
         as_of_date: Optional[object] = None,
     ) -> DashboardSnapshot:
         now = taipei_now()
-        normalized_as_of = _normalize_date(as_of_date) or now.date()
+        normalized_as_of = resolve_dashboard_as_of_date(as_of_date, now=now, cache_dir=self.cache_dir)
         if normalized_as_of > now.date():
             normalized_as_of = now.date()
         historical = normalized_as_of < now.date()
-        trading_session = is_taipei_trading_session(now)
+        trading_session = normalized_as_of == now.date() and is_taipei_trading_session(now)
         ttl_env = "DASHBOARD_HISTORICAL_CACHE_SECONDS" if historical else "DASHBOARD_CACHE_SECONDS"
         default_ttl = str(30 * 24 * 60 * 60) if historical else str(DEFAULT_LIVE_CACHE_SECONDS if trading_session else 900)
         ttl = int(os.getenv(ttl_env, default_ttl))
@@ -3623,7 +3676,7 @@ class DashboardCache:
         final_error = None
         with self._refresh_lock(final_key):
             now = taipei_now()
-            trading_session = is_taipei_trading_session(now)
+            trading_session = normalized_as_of == now.date() and is_taipei_trading_session(now)
             closing_refresh_at = latest_closing_refresh_at(now, normalized_as_of)
             if not force_refresh:
                 cached_final = self._get_cached_snapshot(
@@ -3680,7 +3733,8 @@ class DashboardCache:
         key = self._criteria_key(criteria, as_of_date, cache_kind)
         with self._refresh_lock(key):
             now = taipei_now()
-            trading_session = is_taipei_trading_session(now)
+            normalized_as_of = _normalize_date(as_of_date)
+            trading_session = normalized_as_of == now.date() and is_taipei_trading_session(now)
             closing_refresh_at = latest_closing_refresh_at(now, as_of_date)
             if not force_refresh:
                 cached = self._get_cached_snapshot(
@@ -4061,7 +4115,7 @@ class IntradayTrajectoryCache:
         self.lock = Lock()
 
     def read(self, as_of_date: Optional[object] = None) -> Dict[str, object]:
-        normalized_as_of = _normalize_date(as_of_date) or taipei_now().date()
+        normalized_as_of = resolve_dashboard_as_of_date(as_of_date, cache_dir=self.cache_dir)
         history = self._empty_history(normalized_as_of)
         cached = self._read_history_file(self._cache_path(normalized_as_of), normalized_as_of)
         if cached is not None:
@@ -5023,24 +5077,23 @@ def _dashboard_script() -> str:
 
   function buildIntradayTrajectoryUrl() {
     const params = new URLSearchParams();
-    const asOf = currentAsOfDate();
-    if (asOf) params.set("as_of", asOf);
+    if (asOfPinned) params.set("as_of", currentAsOfDate());
     const query = params.toString();
     return query ? `/api/intraday-trajectory?${query}` : "/api/intraday-trajectory";
   }
 
   async function loadCachedIntradayTrajectory() {
-    const asOf = currentAsOfDate() || taipeiDateString();
+    const asOf = asOfPinned ? currentAsOfDate() : "";
     try {
       const response = await fetch(buildIntradayTrajectoryUrl());
       const payload = await response.json();
       if (!response.ok || payload.error) throw new Error(payload.error || "排名軌跡快取讀取失敗");
-      const history = useIntradayHistory(payload, asOf);
+      const history = useIntradayHistory(payload, payload.as_of_date || asOf || taipeiDateString());
       if (hasIntradaySnapshots(history)) return history;
     } catch (error) {
       // Server-side trajectory cache is best-effort; keep any browser-side history.
     }
-    const localHistory = loadIntradayHistory(asOf);
+    const localHistory = loadIntradayHistory(asOf || taipeiDateString());
     if (hasIntradaySnapshots(localHistory)) renderIntradayPanels(localHistory);
     return localHistory;
   }
@@ -5915,13 +5968,14 @@ def _dashboard_script() -> str:
   }
 
   function currentAsOfDate() {
+    if (!asOfPinned) return taipeiDateString();
     const input = document.getElementById("as-of-filter");
     if (input && input.value) return input.value;
-    return asOfPinned ? new URLSearchParams(window.location.search).get("as_of") || taipeiDateString() : taipeiDateString();
+    return new URLSearchParams(window.location.search).get("as_of") || taipeiDateString();
   }
 
   function isSelectedToday() {
-    return currentAsOfDate() === taipeiDateString();
+    return !asOfPinned || currentAsOfDate() === taipeiDateString();
   }
 
   function shouldForceLiveRefresh() {
@@ -5962,12 +6016,12 @@ def _dashboard_script() -> str:
   }
 
   function syncAsOfParam(params, value) {
-    const normalized = value || taipeiDateString();
-    if (asOfPinned || normalized !== taipeiDateString()) {
-      params.set("as_of", normalized);
-    } else {
+    if (!asOfPinned) {
       params.delete("as_of");
+      return;
     }
+    const normalized = value || taipeiDateString();
+    params.set("as_of", normalized);
   }
 
   function buildPoolUrl() {

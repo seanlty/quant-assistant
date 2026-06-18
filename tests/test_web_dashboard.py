@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import uuid
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import pandas as pd
@@ -39,6 +40,7 @@ from src.web_dashboard import (
     pool_to_records,
     render_dashboard_html,
     render_dashboard_shell,
+    resolve_dashboard_as_of_date,
     watchlist_to_records,
     _render_today_overview_chart,
     _today_overview_rows,
@@ -167,6 +169,50 @@ def test_criteria_from_query_accepts_atr_dropdown_values():
     assert criteria_from_query({}).min_atr_percent == 3.0
 
 
+def test_resolve_dashboard_as_of_respects_explicit_date_before_open():
+    resolved = resolve_dashboard_as_of_date(
+        date(2026, 6, 12),
+        now=datetime(2026, 6, 18, 8, 30, tzinfo=TAIPEI_TZ),
+    )
+
+    assert resolved == date(2026, 6, 12)
+
+
+def test_resolve_dashboard_as_of_uses_previous_cached_date_before_open():
+    cache_dir = os.path.join(os.getcwd(), "data", "test-dashboard-cache-{}".format(uuid.uuid4().hex))
+    os.makedirs(cache_dir, exist_ok=True)
+    try:
+        with open(os.path.join(cache_dir, "dashboard_asof2026-06-17_final_vol5_top50_atr20_price500-5000_minatr3.json"), "w", encoding="utf-8") as cache_file:
+            json.dump({"as_of_date": "2026-06-17"}, cache_file)
+        with open(os.path.join(cache_dir, "dashboard_asof2026-06-18_intraday_vol5_top50_atr20_price500-5000_minatr3.json"), "w", encoding="utf-8") as cache_file:
+            json.dump({"as_of_date": "2026-06-18"}, cache_file)
+
+        resolved = resolve_dashboard_as_of_date(
+            now=datetime(2026, 6, 18, 8, 30, tzinfo=TAIPEI_TZ),
+            cache_dir=cache_dir,
+        )
+
+        assert resolved == date(2026, 6, 17)
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def test_resolve_dashboard_as_of_switches_to_today_at_open():
+    resolved = resolve_dashboard_as_of_date(
+        now=datetime(2026, 6, 18, 8, 45, tzinfo=TAIPEI_TZ),
+    )
+
+    assert resolved == date(2026, 6, 18)
+
+
+def test_resolve_dashboard_as_of_falls_back_to_previous_weekday_on_weekend():
+    resolved = resolve_dashboard_as_of_date(
+        now=datetime(2026, 6, 20, 10, 0, tzinfo=TAIPEI_TZ),
+    )
+
+    assert resolved == date(2026, 6, 19)
+
+
 def test_api_pool_passes_atr_and_as_of_query_to_cache(monkeypatch):
     captured = {}
 
@@ -271,6 +317,35 @@ def test_intraday_trajectory_endpoint_reads_cache(monkeypatch):
         assert payload["cache_hit"] is True
         assert payload["as_of_date"] == "2026-06-16"
         assert payload["snapshots"][0]["cutoff"] == "08:45"
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def test_intraday_trajectory_read_defaults_to_previous_day_before_open(monkeypatch):
+    cache_dir = os.path.join(os.getcwd(), "data", "test-intraday-trajectory-{}".format(uuid.uuid4().hex))
+    try:
+        trajectory_cache = IntradayTrajectoryCache(cache_dir=cache_dir)
+        history = {
+            "version": 1,
+            "as_of_date": "2026-06-17",
+            "updated_at": "2026-06-17 13:45:00 GMT+8",
+            "snapshots": [
+                {
+                    "cutoff": "13:45",
+                    "captured_at": "2026-06-17 13:45:00 GMT+8",
+                    "status": "fresh",
+                    "rows": [{"stock_id": "2330", "stock_name": "TSMC", "volume": 100, "spread_per": 0.5, "rank": 1}],
+                }
+            ],
+        }
+        trajectory_cache._write_history(date(2026, 6, 17), history)
+        monkeypatch.setattr("src.web_dashboard.taipei_now", lambda: datetime(2026, 6, 18, 8, 30, tzinfo=TAIPEI_TZ))
+
+        payload = trajectory_cache.read()
+
+        assert payload["cache_hit"] is True
+        assert payload["as_of_date"] == "2026-06-17"
+        assert payload["snapshots"][0]["cutoff"] == "13:45"
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -729,6 +804,46 @@ def test_dashboard_cache_key_and_file_include_as_of_date():
     assert "minatr4" in path
 
 
+def test_dashboard_cache_default_before_open_serves_previous_final_snapshot(monkeypatch):
+    criteria = StockPoolCriteria(min_atr_percent=4.0)
+    cache = DashboardCache(cache_dir="unused-cache-dir")
+    snapshot = replace(_minimal_snapshot(criteria.min_atr_percent), as_of_date="2026-06-17")
+    snapshot.source["effective_as_of_date"] = "2026-06-17"
+    key = cache._criteria_key(criteria, date(2026, 6, 17), "final")
+    cache.snapshots[key] = snapshot
+    cache.loaded_at[key] = datetime(2026, 6, 17, 14, 0, tzinfo=TAIPEI_TZ)
+
+    def fail_build_snapshot(**kwargs):
+        raise AssertionError("pre-open default should reuse the previous final snapshot")
+
+    monkeypatch.setattr("src.web_dashboard.taipei_now", lambda: datetime(2026, 6, 18, 8, 30, tzinfo=TAIPEI_TZ))
+    monkeypatch.setattr("src.web_dashboard.build_daily_pool_snapshot", fail_build_snapshot)
+
+    assert cache.get_snapshot(criteria=criteria) is snapshot
+
+
+def test_dashboard_cache_default_at_open_builds_today_intraday(monkeypatch):
+    criteria = StockPoolCriteria(min_atr_percent=4.0)
+    cache = DashboardCache(cache_dir="unused-cache-dir")
+    fresh_snapshot = _minimal_snapshot(criteria.min_atr_percent)
+    build_calls = []
+
+    def fake_build_snapshot(**kwargs):
+        build_calls.append(kwargs)
+        return fresh_snapshot
+
+    monkeypatch.setattr("src.web_dashboard.taipei_now", lambda: datetime(2026, 6, 18, 8, 45, tzinfo=TAIPEI_TZ))
+    monkeypatch.setattr(cache, "_read_disk_snapshot", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(cache, "_write_disk_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr("src.web_dashboard.build_daily_pool_snapshot", fake_build_snapshot)
+
+    snapshot = cache.get_snapshot(criteria=criteria)
+
+    assert snapshot.as_of_date == fresh_snapshot.as_of_date
+    assert build_calls[0]["end_date"] == date(2026, 6, 18)
+    assert snapshot.source["cache_kind"] == "intraday"
+
+
 def test_dashboard_cache_reads_legacy_cache_filename():
     criteria = StockPoolCriteria(min_atr_percent=4.0)
     cache_dir = os.path.join(os.getcwd(), "data", "test-cache-{}".format(uuid.uuid4().hex))
@@ -795,6 +910,51 @@ def test_historical_snapshot_rolls_non_trading_date_back_and_skips_fugle(monkeyp
     assert snapshot.source["fugle_quote_rows"] == 0
     assert snapshot.source["futures_volume_source"] == "FinMind TaiwanFuturesDaily"
     assert {row["date"] for row in snapshot.rows + snapshot.active_rows} == {"2026-06-12"}
+
+
+def test_default_snapshot_before_open_uses_previous_trading_day_and_skips_fugle(monkeypatch):
+    all_dates = [value.date() for value in pd.bdate_range("2026-04-28", "2026-06-17")]
+    captured = {}
+
+    def fail_fugle_fetch(*args, **kwargs):
+        raise AssertionError("pre-open default should not call Fugle APIs")
+
+    def fake_trading_dates(token, end_day, count, timeout=60):
+        captured["requested_end_day"] = end_day
+        assert end_day == date(2026, 6, 17)
+        return all_dates[-count:]
+
+    def fake_futures_history(token, trading_dates, required_days, timeout=60):
+        captured["history_max_date"] = max(trading_dates)
+        assert max(trading_dates) == date(2026, 6, 17)
+        used_dates = trading_dates[-required_days:]
+        return pd.DataFrame(_futures_daily_rows(used_dates)), used_dates
+
+    monkeypatch.setattr("src.web_dashboard.get_finmind_token", lambda: "finmind-token")
+    monkeypatch.setattr("src.web_dashboard.get_fugle_token", lambda: "fugle-token")
+    monkeypatch.setattr("src.web_dashboard.taipei_now", lambda: datetime(2026, 6, 18, 8, 30, tzinfo=TAIPEI_TZ))
+    monkeypatch.setattr("src.web_dashboard.fetch_fugle_stock_futures_products", fail_fugle_fetch)
+    monkeypatch.setattr("src.web_dashboard.fetch_fugle_stock_futures_tickers", fail_fugle_fetch)
+    monkeypatch.setattr("src.web_dashboard.fetch_fugle_near_month_quotes", fail_fugle_fetch)
+    monkeypatch.setattr("src.web_dashboard.fetch_taifex_stock_futures_contracts", lambda timeout=60: _stock_futures_contract_rows())
+    monkeypatch.setattr("src.web_dashboard.fetch_finmind_futopt_daily_info", lambda token, timeout=60: _stock_futures_product_info())
+    monkeypatch.setattr("src.web_dashboard.fetch_recent_finmind_trading_dates", fake_trading_dates)
+    monkeypatch.setattr("src.web_dashboard.fetch_recent_finmind_futures_daily_history", fake_futures_history)
+
+    snapshot = build_daily_pool_snapshot(
+        criteria=StockPoolCriteria(min_atr_percent=2.0),
+        timeout=1,
+        trading_date_buffer=5,
+    )
+
+    assert captured["requested_end_day"] == date(2026, 6, 17)
+    assert captured["history_max_date"] == date(2026, 6, 17)
+    assert snapshot.as_of_date == "2026-06-17"
+    assert snapshot.source["requested_as_of_date"] == "2026-06-17"
+    assert snapshot.source["effective_as_of_date"] == "2026-06-17"
+    assert snapshot.source["historical_mode"] is True
+    assert snapshot.source["realtime_quote_enabled"] is False
+    assert snapshot.source["fugle_quote_rows"] == 0
 
 
 def test_post_close_quote_window_starts_at_1400_taipei():
@@ -1788,6 +1948,11 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "if (backgroundRefresh) loadPool();" in html
     assert 'params.set("min_atr_percent", currentAtrPercent())' in html
     assert "let asOfPinned" in html
+    assert "if (!asOfPinned) return taipeiDateString();" in html
+    assert "return !asOfPinned || currentAsOfDate() === taipeiDateString();" in html
+    assert 'if (!asOfPinned) {' in html
+    assert 'params.delete("as_of");' in html
+    assert 'if (asOfPinned) params.set("as_of", currentAsOfDate());' in html
     assert "syncAsOfParam(params, currentAsOfDate())" in html
     assert "syncAsOfParam(syncedParams, effectiveAsOf)" in html
     assert 'params.delete("refresh")' in html
