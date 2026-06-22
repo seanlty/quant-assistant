@@ -24,6 +24,7 @@ from src.web_dashboard import (
     build_contracts_from_stock_futures,
     build_futures_product_history,
     build_futures_strategy_pool,
+    fetch_fugle_near_month_candles,
     build_new_entry_pool,
     build_stock_futures_contract_map_from_fugle,
     build_stock_futures_contract_map,
@@ -549,6 +550,48 @@ def test_build_near_month_tickers_from_watchlist_symbols_ignores_numeric_months(
 
     assert list(tickers["symbol"]) == ["CDFG6"]
     assert tickers.iloc[0]["fugle_product_id"] == "CDF"
+
+
+def test_fetch_fugle_near_month_candles_omits_regular_session(monkeypatch):
+    stock_futures = pd.DataFrame(
+        [
+            {
+                "stock_id": "2330",
+                "stock_name": "台積電",
+                "futures_id": "CDF",
+                "finmind_futures_id": "CDF",
+                "fugle_product_id": "CDF",
+                "contract_size": 2000,
+            }
+        ]
+    )
+    near_month_tickers = pd.DataFrame([{"symbol": "CDFG6", "fugle_product_id": "CDF", "endDate": "2026-07-15"}])
+    captured = {}
+
+    def fake_fetch_candles(symbol, api_key, timeframe="5", session=None, timeout=30):
+        captured["symbol"] = symbol
+        captured["session"] = session
+        return {
+            "data": [
+                {
+                    "date": "2026-06-17T08:45:00.000+08:00",
+                    "open": 100,
+                    "high": 101,
+                    "low": 99,
+                    "close": 100,
+                    "volume": 1,
+                }
+            ]
+        }
+
+    monkeypatch.setattr("src.web_dashboard.fetch_fugle_futopt_candles", fake_fetch_candles)
+
+    candles = fetch_fugle_near_month_candles("token", near_month_tickers, stock_futures)
+
+    assert captured["symbol"] == "CDFG6"
+    assert captured["session"] is None
+    assert len(candles) == 1
+    assert candles.attrs["fetch_error_count"] == 0
 
 
 def test_rebuild_trajectory_falls_back_to_product_tickers(monkeypatch):

@@ -993,7 +993,7 @@ def fetch_fugle_near_month_candles(
     near_month_tickers: pd.DataFrame,
     stock_futures: pd.DataFrame,
     timeframe: str = "5",
-    session: str = "REGULAR",
+    session: Optional[str] = None,
     timeout: int = 60,
 ) -> pd.DataFrame:
     if not token or near_month_tickers.empty or stock_futures.empty:
@@ -1010,6 +1010,7 @@ def fetch_fugle_near_month_candles(
 
     product_by_symbol = tickers.drop_duplicates(subset=["symbol"]).set_index("symbol")["fugle_product_id"].to_dict()
     candle_rows = []
+    fetch_errors = []
     max_workers = max(1, _env_int("FUGLE_CANDLE_WORKERS", 12))
     max_workers = min(max_workers, 24, max(1, len(symbols)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1028,7 +1029,8 @@ def fetch_fugle_near_month_candles(
             symbol = future_map[future]
             try:
                 payload = future.result()
-            except Exception:
+            except Exception as error:
+                fetch_errors.append("{}:{}".format(symbol, error.__class__.__name__))
                 continue
             data = payload.get("data") if isinstance(payload, dict) else None
             rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
@@ -1041,8 +1043,15 @@ def fetch_fugle_near_month_candles(
                 candle_rows.append(record)
 
     if not candle_rows:
-        return pd.DataFrame()
-    return pd.DataFrame(candle_rows)
+        result = pd.DataFrame()
+    else:
+        result = pd.DataFrame(candle_rows)
+    result.attrs["requested_symbols"] = symbols
+    result.attrs["fetch_error_count"] = len(fetch_errors)
+    result.attrs["fetch_errors"] = fetch_errors[:8]
+    result.attrs["session"] = session or ""
+    result.attrs["timeframe"] = timeframe
+    return result
 
 
 def build_stock_futures_contract_map_from_fugle(fugle_products: pd.DataFrame) -> pd.DataFrame:
@@ -4875,6 +4884,9 @@ def rebuild_intraday_trajectory_from_fugle(
         timeout=timeout,
     )
     normalized_candles = _normalize_fugle_candle_rows(raw_candles, stock_futures)
+    requested_symbols = raw_candles.attrs.get("requested_symbols", []) if hasattr(raw_candles, "attrs") else []
+    fetch_errors = raw_candles.attrs.get("fetch_errors", []) if hasattr(raw_candles, "attrs") else []
+    fetch_error_count = raw_candles.attrs.get("fetch_error_count", 0) if hasattr(raw_candles, "attrs") else 0
     history = build_intraday_trajectory_history_from_candles(
         as_of_date=normalized_as_of,
         watchlist_rows=watchlist_rows,
@@ -4889,10 +4901,27 @@ def rebuild_intraday_trajectory_from_fugle(
             "fugle_near_month_rows": int(len(near_month_tickers)),
             "fugle_raw_candle_rows": int(len(raw_candles)),
             "fugle_normalized_candle_rows": int(len(normalized_candles)),
+            "fugle_candle_requested_symbols": list(requested_symbols[:8]),
+            "fugle_candle_fetch_error_count": int(fetch_error_count or 0),
+            "fugle_candle_fetch_errors": list(fetch_errors[:8]),
+            "fugle_candle_session": str(raw_candles.attrs.get("session", "")) if hasattr(raw_candles, "attrs") else "",
         },
     )
     if not history.get("snapshots"):
-        raise RuntimeError("Fugle candles did not produce any intraday trajectory snapshots")
+        source = history.get("source") if isinstance(history.get("source"), dict) else {}
+        raise RuntimeError(
+            "Fugle candles did not produce any intraday trajectory snapshots "
+            "(as_of={}, near_month={}, raw_candles={}, normalized_candles={}, filtered_candles={}, "
+            "fetch_errors={}, symbols={})".format(
+                normalized_as_of.isoformat(),
+                int(len(near_month_tickers)),
+                int(len(raw_candles)),
+                int(len(normalized_candles)),
+                int(source.get("normalized_candle_rows") or 0),
+                int(fetch_error_count or 0),
+                ",".join(str(value) for value in requested_symbols[:5]),
+            )
+        )
     return intraday_trajectory_cache.replace_history(normalized_as_of, history)
 
 
