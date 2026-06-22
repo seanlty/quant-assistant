@@ -901,6 +901,47 @@ def fetch_fugle_stock_futures_tickers(token: Optional[str], timeout: int = 60) -
         return pd.DataFrame()
 
 
+def fetch_fugle_stock_futures_tickers_by_products(
+    token: Optional[str],
+    stock_futures: pd.DataFrame,
+    product_ids: Optional[Sequence[str]] = None,
+    timeout: int = 60,
+) -> pd.DataFrame:
+    if not token or stock_futures.empty or os.getenv("USE_FUGLE_INTRADAY_QUOTE", "1") == "0":
+        return pd.DataFrame()
+
+    products = [str(value).strip() for value in (product_ids or _product_codes(stock_futures)) if str(value).strip()]
+    if not products:
+        return pd.DataFrame()
+    max_products = _env_int("FUGLE_MAX_TICKER_PRODUCT_FETCHES", 0)
+    if max_products > 0:
+        products = products[:max_products]
+
+    frames = []
+    max_workers = max(1, _env_int("FUGLE_TICKER_PRODUCT_WORKERS", 8))
+    max_workers = min(max_workers, 16, max(1, len(products)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(fetch_fugle_futopt_tickers, api_key=token, product=product, timeout=timeout): product
+            for product in products
+        }
+        for future in as_completed(future_map):
+            product = future_map[future]
+            try:
+                frame = future.result()
+            except Exception:
+                continue
+            if frame is None or frame.empty:
+                continue
+            frame = frame.copy()
+            frame["fugle_product_id"] = product
+            frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def fetch_fugle_near_month_quotes(
     token: Optional[str],
     near_month_tickers: pd.DataFrame,
@@ -1051,6 +1092,48 @@ def add_fugle_contract_months(
     )
     near = result[result["month_bucket"] == "near"].copy()
     return result.reset_index(drop=True), near.reset_index(drop=True)
+
+
+def build_near_month_tickers_from_watchlist_symbols(
+    watchlist_rows: Sequence[Dict[str, object]],
+    stock_futures: pd.DataFrame,
+) -> pd.DataFrame:
+    if not watchlist_rows or stock_futures.empty:
+        return pd.DataFrame()
+    product_codes = _product_codes(stock_futures)
+    if not product_codes:
+        return pd.DataFrame()
+    records = []
+    seen = set()
+    for row in watchlist_rows:
+        if not isinstance(row, dict):
+            continue
+        candidates = []
+        for key in ("contract_date", "futures_id", "finmind_futures_id"):
+            raw = str(row.get(key) or "").strip()
+            if not raw:
+                continue
+            candidates.extend(part.strip() for part in raw.replace("，", ",").split(",") if part.strip())
+        for candidate in candidates:
+            if "/" in candidate or candidate.isdigit():
+                continue
+            product_id = _match_product_code(candidate, product_codes)
+            if not product_id or len(candidate) <= len(product_id):
+                continue
+            key = (candidate, product_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(
+                {
+                    "symbol": candidate,
+                    "fugle_product_id": product_id,
+                    "endDate": pd.NaT,
+                    "month_bucket": "near",
+                    "source": "watchlist_contract_date",
+                }
+            )
+    return pd.DataFrame(records)
 
 
 def build_stock_futures_contract_map(
@@ -4733,6 +4816,7 @@ def rebuild_intraday_trajectory_from_fugle(
     watchlist_rows = snapshot.watchlist_rows or []
     if not watchlist_rows:
         raise RuntimeError("dashboard watchlist is empty; cannot rebuild trajectory")
+    watchlist_ids = {str(row.get("stock_id") or "").strip() for row in watchlist_rows if isinstance(row, dict)}
 
     fugle_products = fetch_fugle_stock_futures_products(token, timeout=timeout)
     fugle_tickers = fetch_fugle_stock_futures_tickers(token, timeout=timeout)
@@ -4744,21 +4828,43 @@ def rebuild_intraday_trajectory_from_fugle(
     if stock_futures.empty:
         raise RuntimeError("Fugle product metadata is unavailable; cannot map candle symbols")
 
-    fugle_tickers, near_month_tickers = add_fugle_contract_months(fugle_tickers, stock_futures)
-    if near_month_tickers.empty:
-        raise RuntimeError("Fugle near-month tickers are unavailable; cannot fetch candles")
-
-    watchlist_ids = {str(row.get("stock_id") or "").strip() for row in watchlist_rows if isinstance(row, dict)}
     product_ids = set(
         stock_futures.loc[
             stock_futures["stock_id"].astype(str).isin(watchlist_ids),
             "fugle_product_id",
         ].astype(str)
     )
+    if fugle_tickers.empty and product_ids:
+        fugle_tickers = fetch_fugle_stock_futures_tickers_by_products(
+            token=token,
+            stock_futures=stock_futures,
+            product_ids=sorted(product_ids),
+            timeout=timeout,
+        )
+    fugle_tickers, near_month_tickers = add_fugle_contract_months(fugle_tickers, stock_futures)
+    if near_month_tickers.empty:
+        near_month_tickers = build_near_month_tickers_from_watchlist_symbols(watchlist_rows, stock_futures)
+    if near_month_tickers.empty:
+        raise RuntimeError(
+            "Fugle near-month tickers are unavailable; cannot fetch candles "
+            "(products={}, tickers={}, watchlist_symbols={})".format(
+                int(len(fugle_products)),
+                int(len(fugle_tickers)),
+                int(len(build_near_month_tickers_from_watchlist_symbols(watchlist_rows, stock_futures))),
+            )
+        )
+
     if product_ids:
         near_month_tickers = near_month_tickers[near_month_tickers["fugle_product_id"].astype(str).isin(product_ids)].copy()
     if near_month_tickers.empty:
-        raise RuntimeError("No near-month tickers match the dashboard watchlist")
+        raise RuntimeError(
+            "No near-month tickers match the dashboard watchlist "
+            "(products={}, tickers={}, watchlist_ids={})".format(
+                int(len(fugle_products)),
+                int(len(fugle_tickers)),
+                int(len(watchlist_ids)),
+            )
+        )
 
     candle_minutes = _env_int("FUGLE_TRAJECTORY_CANDLE_MINUTES", 5)
     raw_candles = fetch_fugle_near_month_candles(

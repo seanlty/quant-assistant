@@ -16,6 +16,7 @@ from src.web_dashboard import (
     TAIPEI_TZ,
     add_fugle_contract_months,
     application,
+    build_near_month_tickers_from_watchlist_symbols,
     build_intraday_trajectory_history_from_candles,
     build_fugle_quote_volume_history,
     build_daily_pool_snapshot,
@@ -524,6 +525,93 @@ def test_build_intraday_trajectory_history_from_candles_uses_cumulative_volume()
     tsmc = [row for row in history["snapshots"][1]["rows"] if row["stock_id"] == "2330"][0]
     assert tsmc["volume"] == 150
     assert tsmc["spread_per"] == 4.0
+
+
+def test_build_near_month_tickers_from_watchlist_symbols_ignores_numeric_months():
+    stock_futures = pd.DataFrame(
+        [
+            {
+                "stock_id": "2330",
+                "stock_name": "台積電",
+                "futures_id": "CD",
+                "finmind_futures_id": "CDF",
+                "fugle_product_id": "CDF",
+                "contract_size": 2000,
+            }
+        ]
+    )
+    watchlist_rows = [
+        {"stock_id": "2330", "contract_date": "202607", "futures_id": "CDF"},
+        {"stock_id": "2330", "contract_date": "CDFG6", "futures_id": "CDF"},
+    ]
+
+    tickers = build_near_month_tickers_from_watchlist_symbols(watchlist_rows, stock_futures)
+
+    assert list(tickers["symbol"]) == ["CDFG6"]
+    assert tickers.iloc[0]["fugle_product_id"] == "CDF"
+
+
+def test_rebuild_trajectory_falls_back_to_product_tickers(monkeypatch):
+    snapshot = replace(_minimal_snapshot(), as_of_date="2026-06-17")
+    snapshot.watchlist_rows.append(
+        {
+            "stock_id": "2330",
+            "stock_name": "台積電",
+            "finmind_futures_id": "CDF",
+            "futures_id": "CDF",
+            "contract_type_label": "大型",
+            "close": 105,
+            "spread": 5,
+            "contract_date": "202607",
+        }
+    )
+    products = pd.DataFrame(
+        [
+            {
+                "symbol": "CDF",
+                "underlyingSymbol": "2330",
+                "name": "台積電期貨",
+                "type": "FUTURE",
+                "contractType": "S",
+                "contractSize": 2000,
+            }
+        ]
+    )
+    product_tickers = pd.DataFrame([{"symbol": "CDFG6", "endDate": "2026-07-15"}])
+    candles = pd.DataFrame(
+        [
+            {"date": "2026-06-17T08:45:00+08:00", "symbol": "CDFG6", "close": 102, "volume": 100},
+            {"date": "2026-06-17T08:50:00+08:00", "symbol": "CDFG6", "close": 103, "volume": 50},
+            {"date": "2026-06-17T08:55:00+08:00", "symbol": "CDFG6", "close": 104, "volume": 25},
+        ]
+    )
+    cache_dir = os.path.join(os.getcwd(), "data", "test-intraday-trajectory-{}".format(uuid.uuid4().hex))
+    try:
+        trajectory_cache = IntradayTrajectoryCache(cache_dir=cache_dir)
+        monkeypatch.setenv("FUGLE_API_KEY", "test-key")
+        monkeypatch.setattr("src.web_dashboard.dashboard_cache.get_snapshot", lambda **kwargs: snapshot)
+        monkeypatch.setattr("src.web_dashboard.fetch_fugle_stock_futures_products", lambda token, timeout=60: products)
+        monkeypatch.setattr("src.web_dashboard.fetch_fugle_stock_futures_tickers", lambda token, timeout=60: pd.DataFrame())
+        monkeypatch.setattr(
+            "src.web_dashboard.fetch_fugle_stock_futures_tickers_by_products",
+            lambda token, stock_futures, product_ids=None, timeout=60: product_tickers,
+        )
+        monkeypatch.setattr(
+            "src.web_dashboard.fetch_fugle_near_month_candles",
+            lambda token, near_month_tickers, stock_futures, timeframe="5", session="REGULAR", timeout=60: candles,
+        )
+        monkeypatch.setattr("src.web_dashboard.intraday_trajectory_cache", trajectory_cache)
+
+        from src.web_dashboard import rebuild_intraday_trajectory_from_fugle
+
+        history = rebuild_intraday_trajectory_from_fugle(as_of_date=date(2026, 6, 17))
+
+        assert history["cache_hit"] is True
+        assert history["snapshots"][0]["cutoff"] == "08:45"
+        assert history["snapshots"][0]["rows"][0]["stock_id"] == "2330"
+        assert history["source"]["fugle_ticker_rows"] == 1
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 def test_admin_refresh_requires_configured_token(monkeypatch):
