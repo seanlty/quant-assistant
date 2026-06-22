@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +25,7 @@ try:
         fetch_finmind_futopt_daily_info,
         fetch_finmind_futures_daily,
         fetch_finmind_stock_prices,
+        fetch_fugle_futopt_candles,
         fetch_fugle_futopt_products,
         fetch_fugle_futopt_quote,
         fetch_fugle_futopt_tickers,
@@ -36,6 +38,7 @@ except ImportError:  # pragma: no cover
         fetch_finmind_futopt_daily_info,
         fetch_finmind_futures_daily,
         fetch_finmind_stock_prices,
+        fetch_fugle_futopt_candles,
         fetch_fugle_futopt_products,
         fetch_fugle_futopt_quote,
         fetch_fugle_futopt_tickers,
@@ -66,6 +69,7 @@ CONTRACT_METADATA_CACHE_SCHEMA_VERSION = 1
 DEFAULT_CONTRACT_METADATA_CACHE_SECONDS = 3 * 24 * 60 * 60
 FINAL_MIN_PRODUCT_COVERAGE = 0.7
 FINAL_MIN_PRODUCTS = 20
+ADMIN_REFRESH_TOKEN_ENV = "DASHBOARD_REFRESH_TOKEN"
 FUTURES_PRODUCT_HISTORY_COLUMNS = [
     "date",
     "stock_id",
@@ -157,6 +161,10 @@ def get_finmind_token() -> Optional[str]:
 
 def get_fugle_token() -> Optional[str]:
     return os.getenv("FUGLE_API_KEY") or os.getenv("FUGLE_API_TOKEN") or os.getenv("FUGLE_TOKEN")
+
+
+def get_admin_refresh_token() -> Optional[str]:
+    return os.getenv(ADMIN_REFRESH_TOKEN_ENV) or os.getenv("DASHBOARD_ADMIN_TOKEN")
 
 
 def taipei_now() -> datetime:
@@ -939,6 +947,63 @@ def fetch_fugle_near_month_quotes(
     return pd.DataFrame(quote_rows)
 
 
+def fetch_fugle_near_month_candles(
+    token: Optional[str],
+    near_month_tickers: pd.DataFrame,
+    stock_futures: pd.DataFrame,
+    timeframe: str = "5",
+    session: str = "REGULAR",
+    timeout: int = 60,
+) -> pd.DataFrame:
+    if not token or near_month_tickers.empty or stock_futures.empty:
+        return pd.DataFrame()
+
+    tickers = near_month_tickers.dropna(subset=["symbol"]).copy()
+    tickers = tickers.sort_values(["fugle_product_id", "endDate", "symbol"], na_position="last")
+    symbols = tickers["symbol"].dropna().astype(str).drop_duplicates().tolist()
+    max_symbols = _env_int("FUGLE_MAX_CANDLE_SYMBOLS", 0)
+    if max_symbols > 0:
+        symbols = symbols[:max_symbols]
+    if not symbols:
+        return pd.DataFrame()
+
+    product_by_symbol = tickers.drop_duplicates(subset=["symbol"]).set_index("symbol")["fugle_product_id"].to_dict()
+    candle_rows = []
+    max_workers = max(1, _env_int("FUGLE_CANDLE_WORKERS", 12))
+    max_workers = min(max_workers, 24, max(1, len(symbols)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                fetch_fugle_futopt_candles,
+                symbol=symbol,
+                api_key=token,
+                timeframe=timeframe,
+                session=session,
+                timeout=timeout,
+            ): symbol
+            for symbol in symbols
+        }
+        for future in as_completed(future_map):
+            symbol = future_map[future]
+            try:
+                payload = future.result()
+            except Exception:
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else None
+            rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                record = dict(row)
+                record["_ticker_symbol"] = symbol
+                record["fugle_product_id"] = product_by_symbol.get(symbol)
+                candle_rows.append(record)
+
+    if not candle_rows:
+        return pd.DataFrame()
+    return pd.DataFrame(candle_rows)
+
+
 def build_stock_futures_contract_map_from_fugle(fugle_products: pd.DataFrame) -> pd.DataFrame:
     if fugle_products is None or fugle_products.empty:
         return _empty_stock_futures_map()
@@ -1712,6 +1777,262 @@ def _normalize_fugle_quote_rows(
         "Trading_Volume",
     ]
     return quotes.loc[:, columns].reset_index(drop=True)
+
+
+def _series_from_first_column(df: pd.DataFrame, names: Sequence[str]) -> pd.Series:
+    for name in names:
+        if name in df.columns:
+            return df[name]
+    return pd.Series(pd.NA, index=df.index)
+
+
+def _parse_taipei_timestamp(value: object):
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError, OverflowError):
+        return pd.NaT
+    if pd.isna(timestamp):
+        return pd.NaT
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize(TAIPEI_TZ)
+    return timestamp.tz_convert(TAIPEI_TZ)
+
+
+def _normalize_fugle_candle_rows(
+    candle_rows: Optional[pd.DataFrame],
+    stock_futures: pd.DataFrame,
+) -> pd.DataFrame:
+    if candle_rows is None or candle_rows.empty or stock_futures.empty:
+        return pd.DataFrame()
+
+    candles = candle_rows.copy()
+    if "symbol" not in candles.columns and "_ticker_symbol" in candles.columns:
+        candles["symbol"] = candles["_ticker_symbol"]
+    if "symbol" not in candles.columns or "date" not in candles.columns:
+        return pd.DataFrame()
+
+    product_codes = _product_codes(stock_futures)
+    if "fugle_product_id" not in candles.columns:
+        candles["fugle_product_id"] = candles["symbol"].map(lambda value: _match_product_code(value, product_codes))
+    product_map = stock_futures.drop_duplicates(subset=["fugle_product_id"]).copy()
+    candles = candles.merge(product_map, on="fugle_product_id", how="inner", suffixes=("_candle", ""))
+    if candles.empty:
+        return pd.DataFrame()
+
+    candles["_timestamp"] = candles["date"].map(_parse_taipei_timestamp)
+    candles = candles[candles["_timestamp"].notna()].copy()
+    if candles.empty:
+        return pd.DataFrame()
+    candles["as_of_date"] = candles["_timestamp"].map(lambda value: value.date())
+    candles["minute"] = candles["_timestamp"].map(lambda value: value.hour * 60 + value.minute)
+    candles["contract_date"] = candles["symbol"].astype(str)
+    candles["close"] = pd.to_numeric(_series_from_first_column(candles, ("close", "closePrice", "lastPrice")), errors="coerce")
+    candles["Trading_Volume"] = pd.to_numeric(_series_from_first_column(candles, ("volume", "tradeVolume")), errors="coerce").fillna(0)
+    if "contract_type" not in candles.columns or "contract_type_label" not in candles.columns:
+        type_values = candles.get("contract_size", pd.Series(pd.NA, index=candles.index)).map(_contract_type_from_size)
+        candles["contract_type"] = type_values.map(lambda value: value[0])
+        candles["contract_type_label"] = type_values.map(lambda value: value[1])
+
+    columns = [
+        "as_of_date",
+        "minute",
+        "_timestamp",
+        "stock_id",
+        "stock_name",
+        "futures_id",
+        "finmind_futures_id",
+        "fugle_product_id",
+        "contract_type",
+        "contract_type_label",
+        "contract_date",
+        "close",
+        "Trading_Volume",
+        "symbol",
+    ]
+    return candles.loc[:, columns].reset_index(drop=True)
+
+
+def _previous_close_from_watchlist_row(row: Dict[str, object]) -> Optional[float]:
+    close = _trajectory_number(row.get("close"))
+    spread = _trajectory_number(row.get("spread"))
+    if close is not None and spread is not None:
+        previous_close = close - spread
+        if previous_close > 0:
+            return previous_close
+    derived_spread = _derive_spread_from_percent(row.get("close"), row.get("spread_per"))
+    if close is not None and derived_spread is not None:
+        previous_close = close - derived_spread
+        if previous_close > 0:
+            return previous_close
+    return None
+
+
+def _intraday_cutoff_labels() -> List[str]:
+    return [
+        _minute_label(minutes)
+        for minutes in range(INTRADAY_OPEN_MINUTES, INTRADAY_CLOSE_MINUTES + 1, INTRADAY_BUCKET_MINUTES)
+    ]
+
+
+def build_intraday_trajectory_history_from_candles(
+    as_of_date: object,
+    watchlist_rows: Sequence[Dict[str, object]],
+    candle_rows: pd.DataFrame,
+    candle_minutes: int = 5,
+    now: Optional[datetime] = None,
+    source: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    normalized_as_of = _normalize_date(as_of_date) or taipei_now().date()
+    current = now or taipei_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=TAIPEI_TZ)
+    current = current.astimezone(TAIPEI_TZ)
+
+    stock_meta: Dict[str, Dict[str, object]] = {}
+    for row in watchlist_rows or []:
+        if not isinstance(row, dict):
+            continue
+        stock_id = str(row.get("stock_id") or "").strip()
+        if not stock_id:
+            continue
+        stock_meta[stock_id] = {
+            "stock_name": str(row.get("stock_name") or stock_id),
+            "futures_id": str(row.get("finmind_futures_id") or row.get("futures_id") or ""),
+            "contract_type_label": str(row.get("contract_type_label") or ""),
+            "previous_close": _previous_close_from_watchlist_row(row),
+        }
+
+    if candle_rows is None or candle_rows.empty:
+        normalized_candles = pd.DataFrame()
+    else:
+        normalized_candles = candle_rows.copy()
+    if "as_of_date" not in normalized_candles.columns and "date" in normalized_candles.columns:
+        normalized_candles["_timestamp"] = normalized_candles["date"].map(_parse_taipei_timestamp)
+        normalized_candles["as_of_date"] = normalized_candles["_timestamp"].map(
+            lambda value: value.date() if pd.notna(value) else pd.NaT
+        )
+    if "minute" not in normalized_candles.columns and "_timestamp" in normalized_candles.columns:
+        normalized_candles["minute"] = normalized_candles["_timestamp"].map(
+            lambda value: value.hour * 60 + value.minute if pd.notna(value) else pd.NA
+        )
+    if "Trading_Volume" not in normalized_candles.columns:
+        normalized_candles["Trading_Volume"] = pd.to_numeric(
+            _series_from_first_column(normalized_candles, ("volume", "tradeVolume")),
+            errors="coerce",
+        ).fillna(0)
+    if "close" not in normalized_candles.columns:
+        normalized_candles["close"] = pd.to_numeric(
+            _series_from_first_column(normalized_candles, ("closePrice", "lastPrice")),
+            errors="coerce",
+        )
+
+    required_columns = {"as_of_date", "minute", "stock_id", "close", "Trading_Volume"}
+    if normalized_candles.empty or not required_columns.issubset(normalized_candles.columns):
+        filtered = pd.DataFrame()
+    else:
+        filtered = normalized_candles.copy()
+        filtered["as_of_date"] = filtered["as_of_date"].map(_normalize_date)
+        filtered["minute"] = pd.to_numeric(filtered["minute"], errors="coerce")
+        filtered["Trading_Volume"] = pd.to_numeric(filtered["Trading_Volume"], errors="coerce").fillna(0)
+        filtered["close"] = pd.to_numeric(filtered["close"], errors="coerce")
+        filtered["stock_id"] = filtered["stock_id"].astype(str).str.strip()
+        filtered = filtered[
+            (filtered["as_of_date"] == normalized_as_of)
+            & (filtered["minute"] >= INTRADAY_OPEN_MINUTES)
+            & (filtered["minute"] <= INTRADAY_CLOSE_MINUTES)
+            & filtered["stock_id"].ne("")
+            & filtered["close"].notna()
+        ].copy()
+        if stock_meta:
+            filtered = filtered[filtered["stock_id"].isin(stock_meta.keys())].copy()
+
+    snapshots = []
+    if not filtered.empty:
+        max_complete_cutoff = min(INTRADAY_CLOSE_MINUTES, int(filtered["minute"].max()) + int(candle_minutes or 5))
+        for cutoff_label in _intraday_cutoff_labels():
+            cutoff_minutes = _label_to_minutes(cutoff_label)
+            if cutoff_minutes > max_complete_cutoff:
+                continue
+            if cutoff_minutes == INTRADAY_OPEN_MINUTES:
+                frame = filtered[filtered["minute"] <= cutoff_minutes].copy()
+            else:
+                frame = filtered[filtered["minute"] < cutoff_minutes].copy()
+            if frame.empty:
+                continue
+            total_volume = (
+                frame.groupby("stock_id", as_index=False)
+                .agg(volume=("Trading_Volume", "sum"))
+            )
+            if "symbol" in frame.columns:
+                symbol_keys = ["stock_id", "symbol"]
+            else:
+                symbol_keys = ["stock_id", "contract_date"] if "contract_date" in frame.columns else ["stock_id"]
+            frame["_symbol_volume"] = frame.groupby(symbol_keys)["Trading_Volume"].transform("sum")
+            sort_columns = ["stock_id", "_symbol_volume", "minute"]
+            ascending = [True, False, False]
+            if "symbol" in frame.columns:
+                sort_columns.append("symbol")
+                ascending.append(True)
+            front = frame.sort_values(sort_columns, ascending=ascending).groupby("stock_id", as_index=False).first()
+            ranked = total_volume.merge(front, on="stock_id", how="inner", suffixes=("", "_front"))
+
+            rows = []
+            for _, row in ranked.iterrows():
+                stock_id = str(row.get("stock_id") or "").strip()
+                meta = stock_meta.get(stock_id, {})
+                previous_close = meta.get("previous_close")
+                if previous_close is None:
+                    previous_close = _previous_close_from_watchlist_row(row.to_dict())
+                close = _trajectory_number(row.get("close"))
+                volume = _trajectory_number(row.get("volume"))
+                if close is None or volume is None or previous_close is None or float(previous_close) <= 0:
+                    continue
+                spread_per = (close - float(previous_close)) / float(previous_close) * 100
+                rows.append(
+                    {
+                        "stock_id": stock_id,
+                        "stock_name": str(meta.get("stock_name") or row.get("stock_name") or stock_id),
+                        "futures_id": str(meta.get("futures_id") or row.get("finmind_futures_id") or row.get("futures_id") or ""),
+                        "contract_type_label": str(meta.get("contract_type_label") or row.get("contract_type_label") or ""),
+                        "close": round(float(close), 2),
+                        "spread_per": round(float(spread_per), 2),
+                        "volume": round(float(volume), 0),
+                    }
+                )
+
+            rows = sorted(rows, key=lambda item: (-float(item["volume"]), str(item["stock_id"])))
+            ranked_rows = []
+            for index, row in enumerate(rows[:INTRADAY_TRAJECTORY_TOP_N], start=1):
+                next_row = dict(row)
+                next_row["rank"] = index
+                ranked_rows.append(next_row)
+            if ranked_rows:
+                snapshots.append(
+                    {
+                        "cutoff": cutoff_label,
+                        "captured_at": format_taipei_datetime(current),
+                        "status": "rebuilt_5m",
+                        "rows": ranked_rows,
+                    }
+                )
+
+    history_source = {
+        "type": "Fugle intraday candles",
+        "candle_minutes": int(candle_minutes or 5),
+        "watchlist_rows": len(watchlist_rows or []),
+        "candle_rows": int(len(candle_rows) if candle_rows is not None else 0),
+        "normalized_candle_rows": int(len(filtered)) if "filtered" in locals() else 0,
+    }
+    if source:
+        history_source.update(source)
+    return {
+        "version": 1,
+        "as_of_date": normalized_as_of.isoformat(),
+        "updated_at": format_taipei_datetime(current),
+        "snapshots": snapshots,
+        "cache_hit": True,
+        "source": history_source,
+    }
 
 
 def _records_from_fugle_products(products: pd.DataFrame) -> List[Dict[str, object]]:
@@ -4191,6 +4512,16 @@ class IntradayTrajectoryCache:
             self._prune()
             return history
 
+    def replace_history(self, as_of_date: object, history: Dict[str, object]) -> Dict[str, object]:
+        normalized_as_of = _normalize_date(as_of_date) or taipei_now().date()
+        normalized = self._normalize_history(history, normalized_as_of, cache_hit=True)
+        normalized["updated_at"] = normalized.get("updated_at") or format_taipei_datetime()
+        normalized["cache_hit"] = True
+        with self.lock:
+            self._write_history(normalized_as_of, normalized)
+            self._prune()
+        return self.read(normalized_as_of)
+
     def _snapshot_rows(self, snapshot: DashboardSnapshot) -> List[Dict[str, object]]:
         rows = []
         for row in snapshot.watchlist_rows or []:
@@ -4269,6 +4600,8 @@ class IntradayTrajectoryCache:
                 "cache_hit": cache_hit,
             }
         )
+        if isinstance(payload.get("source"), dict):
+            result["source"] = payload["source"]
         return result
 
     def _write_history(self, as_of_date: object, history: Dict[str, object]) -> None:
@@ -4308,7 +4641,200 @@ class IntradayTrajectoryCache:
 intraday_trajectory_cache = IntradayTrajectoryCache()
 
 
-def build_dashboard_response(path: str, query_string: str = "") -> Tuple[int, str, bytes]:
+def _json_response(payload: Dict[str, object], status: int = 200) -> Tuple[int, str, bytes]:
+    return status, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _query_flag(query: Dict[str, List[str]], key: str) -> bool:
+    value = (_first_query_value(query, key) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _header_value(headers: Optional[Dict[str, str]], name: str) -> str:
+    for key, value in (headers or {}).items():
+        if str(key).lower() == name.lower():
+            return str(value or "")
+    return ""
+
+
+def _admin_auth_error(headers: Optional[Dict[str, str]]) -> Optional[Tuple[int, Dict[str, object]]]:
+    load_environment()
+    expected = get_admin_refresh_token()
+    if not expected:
+        return 503, {
+            "error": "{} is not configured on the server".format(ADMIN_REFRESH_TOKEN_ENV),
+            "status": "misconfigured",
+        }
+    authorization = _header_value(headers, "Authorization")
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return 401, {"error": "missing bearer token", "status": "unauthorized"}
+    token = authorization[len(prefix):].strip()
+    if not hmac.compare_digest(token, expected):
+        return 401, {"error": "invalid bearer token", "status": "unauthorized"}
+    return None
+
+
+def _resolve_admin_refresh_mode(requested_mode: Optional[str], now: Optional[datetime] = None) -> str:
+    mode = str(requested_mode or "intraday_snapshot").strip().lower()
+    aliases = {
+        "intraday": "intraday_snapshot",
+        "pool": "intraday_snapshot",
+        "snapshot": "intraday_snapshot",
+        "final": "final_snapshot",
+        "rebuild": "rebuild_trajectory",
+        "trajectory_rebuild": "rebuild_trajectory",
+    }
+    mode = aliases.get(mode, mode)
+    if mode != "auto":
+        return mode
+    current = now or taipei_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=TAIPEI_TZ)
+    current = current.astimezone(TAIPEI_TZ)
+    minutes = current.hour * 60 + current.minute
+    if minutes >= 14 * 60 + 45:
+        return "rebuild_trajectory"
+    if minutes >= POST_CLOSE_QUOTE_START_MINUTE:
+        return "final_snapshot"
+    return "intraday_snapshot"
+
+
+def _trajectory_history_summary(history: Dict[str, object]) -> Dict[str, object]:
+    snapshots = history.get("snapshots") if isinstance(history, dict) else []
+    snapshots = snapshots if isinstance(snapshots, list) else []
+    last_snapshot = snapshots[-1] if snapshots and isinstance(snapshots[-1], dict) else {}
+    rows = last_snapshot.get("rows") if isinstance(last_snapshot, dict) else []
+    return {
+        "trajectory_snapshot_count": len(snapshots),
+        "trajectory_last_cutoff": str(last_snapshot.get("cutoff") or ""),
+        "trajectory_last_row_count": len(rows) if isinstance(rows, list) else 0,
+        "trajectory_cache_hit": bool(history.get("cache_hit")) if isinstance(history, dict) else False,
+    }
+
+
+def rebuild_intraday_trajectory_from_fugle(
+    as_of_date: Optional[object] = None,
+    criteria: StockPoolCriteria = StockPoolCriteria(),
+    force_snapshot: bool = False,
+    timeout: int = 60,
+) -> Dict[str, object]:
+    load_environment()
+    token = get_fugle_token()
+    if not token:
+        raise RuntimeError("FUGLE_API_KEY or FUGLE_API_TOKEN is required for trajectory rebuild")
+
+    normalized_as_of = resolve_dashboard_as_of_date(as_of_date, cache_dir=dashboard_cache.cache_dir)
+    snapshot = dashboard_cache.get_snapshot(
+        force_refresh=force_snapshot,
+        criteria=criteria,
+        as_of_date=normalized_as_of,
+    )
+    watchlist_rows = snapshot.watchlist_rows or []
+    if not watchlist_rows:
+        raise RuntimeError("dashboard watchlist is empty; cannot rebuild trajectory")
+
+    fugle_products = fetch_fugle_stock_futures_products(token, timeout=timeout)
+    fugle_tickers = fetch_fugle_stock_futures_tickers(token, timeout=timeout)
+    stock_futures = build_stock_futures_contract_map_from_fugle(fugle_products)
+    if stock_futures.empty:
+        cached_metadata = contract_metadata_cache.read(allow_stale=True)
+        if cached_metadata is not None:
+            stock_futures = cached_metadata["stock_futures"]
+    if stock_futures.empty:
+        raise RuntimeError("Fugle product metadata is unavailable; cannot map candle symbols")
+
+    fugle_tickers, near_month_tickers = add_fugle_contract_months(fugle_tickers, stock_futures)
+    if near_month_tickers.empty:
+        raise RuntimeError("Fugle near-month tickers are unavailable; cannot fetch candles")
+
+    watchlist_ids = {str(row.get("stock_id") or "").strip() for row in watchlist_rows if isinstance(row, dict)}
+    product_ids = set(
+        stock_futures.loc[
+            stock_futures["stock_id"].astype(str).isin(watchlist_ids),
+            "fugle_product_id",
+        ].astype(str)
+    )
+    if product_ids:
+        near_month_tickers = near_month_tickers[near_month_tickers["fugle_product_id"].astype(str).isin(product_ids)].copy()
+    if near_month_tickers.empty:
+        raise RuntimeError("No near-month tickers match the dashboard watchlist")
+
+    candle_minutes = _env_int("FUGLE_TRAJECTORY_CANDLE_MINUTES", 5)
+    raw_candles = fetch_fugle_near_month_candles(
+        token=token,
+        near_month_tickers=near_month_tickers,
+        stock_futures=stock_futures,
+        timeframe=str(candle_minutes),
+        timeout=timeout,
+    )
+    normalized_candles = _normalize_fugle_candle_rows(raw_candles, stock_futures)
+    history = build_intraday_trajectory_history_from_candles(
+        as_of_date=normalized_as_of,
+        watchlist_rows=watchlist_rows,
+        candle_rows=normalized_candles,
+        candle_minutes=candle_minutes,
+        source={
+            "snapshot_as_of_date": snapshot.as_of_date,
+            "snapshot_cache_kind": str(snapshot.source.get("cache_kind") or ""),
+            "snapshot_stage": str(snapshot.source.get("snapshot_stage") or ""),
+            "fugle_product_rows": int(len(fugle_products)),
+            "fugle_ticker_rows": int(len(fugle_tickers)),
+            "fugle_near_month_rows": int(len(near_month_tickers)),
+            "fugle_raw_candle_rows": int(len(raw_candles)),
+            "fugle_normalized_candle_rows": int(len(normalized_candles)),
+        },
+    )
+    if not history.get("snapshots"):
+        raise RuntimeError("Fugle candles did not produce any intraday trajectory snapshots")
+    return intraday_trajectory_cache.replace_history(normalized_as_of, history)
+
+
+def _handle_admin_refresh(query: Dict[str, List[str]], as_of_date: Optional[date], criteria: StockPoolCriteria) -> Tuple[int, str, bytes]:
+    mode = _resolve_admin_refresh_mode(_first_query_value(query, "mode"))
+    if mode not in {"intraday_snapshot", "final_snapshot", "rebuild_trajectory"}:
+        return _json_response({"error": "unsupported refresh mode: {}".format(mode), "status": "bad_request"}, 400)
+
+    try:
+        if mode in {"intraday_snapshot", "final_snapshot"}:
+            snapshot = dashboard_cache.get_snapshot(force_refresh=True, criteria=criteria, as_of_date=as_of_date)
+            trajectory = intraday_trajectory_cache.append_snapshot(snapshot)
+            payload = {
+                "status": "ok",
+                "mode": mode,
+                "as_of_date": snapshot.as_of_date,
+                "generated_at": snapshot.generated_at,
+                "cache_kind": str(snapshot.source.get("cache_kind") or ""),
+                "snapshot_stage": str(snapshot.source.get("snapshot_stage") or ""),
+                "final_ready": bool(snapshot.source.get("final_ready")),
+                "watchlist_count": snapshot.watchlist_count,
+                **_trajectory_history_summary(trajectory),
+            }
+        else:
+            history = rebuild_intraday_trajectory_from_fugle(
+                as_of_date=as_of_date,
+                criteria=criteria,
+                force_snapshot=_query_flag(query, "refresh_snapshot"),
+            )
+            payload = {
+                "status": "ok",
+                "mode": mode,
+                "as_of_date": str(history.get("as_of_date") or ""),
+                "updated_at": str(history.get("updated_at") or ""),
+                **_trajectory_history_summary(history),
+                "source": history.get("source", {}),
+            }
+        return _json_response(payload, 200)
+    except Exception as exc:
+        return _json_response({"error": str(exc), "status": "failed", "mode": mode}, 500)
+
+
+def build_dashboard_response(
+    path: str,
+    query_string: str = "",
+    headers: Optional[Dict[str, str]] = None,
+    method: str = "GET",
+) -> Tuple[int, str, bytes]:
     query = parse_qs(query_string)
     force_refresh = query.get("refresh") == ["1"]
     criteria = criteria_from_query(query)
@@ -4331,11 +4857,20 @@ def build_dashboard_response(path: str, query_string: str = "") -> Tuple[int, st
 
     if path == "/api/intraday-trajectory":
         payload = intraday_trajectory_cache.read(as_of_date)
-        return 200, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return _json_response(payload, 200)
+
+    if path == "/api/admin/refresh":
+        if method.upper() not in {"GET", "POST"}:
+            return _json_response({"error": "method not allowed", "status": "method_not_allowed"}, 405)
+        auth_error = _admin_auth_error(headers)
+        if auth_error is not None:
+            status, payload = auth_error
+            return _json_response(payload, status)
+        return _handle_admin_refresh(query, as_of_date, criteria)
 
     if path == "/health":
         payload = {"status": "ok"}
-        return 200, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return _json_response(payload, 200)
 
     return 404, "text/plain; charset=utf-8", b"Not found"
 
@@ -4344,8 +4879,20 @@ def application(environ, start_response):
     """WSGI entrypoint for PythonAnywhere and other WSGI hosts."""
     path = environ.get("PATH_INFO", "/")
     query_string = environ.get("QUERY_STRING", "")
-    status, content_type, body = build_dashboard_response(path, query_string)
-    reason = {200: "OK", 404: "Not Found", 500: "Internal Server Error"}.get(status, "OK")
+    headers = {}
+    if environ.get("HTTP_AUTHORIZATION"):
+        headers["Authorization"] = environ.get("HTTP_AUTHORIZATION", "")
+    method = environ.get("REQUEST_METHOD", "GET")
+    status, content_type, body = build_dashboard_response(path, query_string, headers=headers, method=method)
+    reason = {
+        200: "OK",
+        400: "Bad Request",
+        401: "Unauthorized",
+        404: "Not Found",
+        405: "Method Not Allowed",
+        500: "Internal Server Error",
+        503: "Service Unavailable",
+    }.get(status, "OK")
     status_line = "{} {}".format(status, reason)
     headers = [
         ("Content-Type", content_type),
@@ -4359,7 +4906,22 @@ def application(environ, start_response):
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        status, content_type, body = build_dashboard_response(parsed.path, parsed.query)
+        status, content_type, body = build_dashboard_response(
+            parsed.path,
+            parsed.query,
+            headers=dict(self.headers),
+            method="GET",
+        )
+        self._send_body(body, content_type, status)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        status, content_type, body = build_dashboard_response(
+            parsed.path,
+            parsed.query,
+            headers=dict(self.headers),
+            method="POST",
+        )
         self._send_body(body, content_type, status)
 
     def log_message(self, format: str, *args: object) -> None:  # pragma: no cover

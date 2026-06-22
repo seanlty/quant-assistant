@@ -1,0 +1,101 @@
+name: Dashboard Scheduled Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Refresh mode: auto, intraday_snapshot, final_snapshot, rebuild_trajectory"
+        required: false
+        default: "auto"
+      min_atr_percent:
+        description: "Dashboard ATR filter"
+        required: false
+        default: "3"
+  schedule:
+    - cron: "48 8 * * 1-5"
+      timezone: "Asia/Taipei"
+    - cron: "3,18,33,45 9-13 * * 1-5"
+      timezone: "Asia/Taipei"
+    - cron: "5,20,35 14 * * 1-5"
+      timezone: "Asia/Taipei"
+    - cron: "50 14 * * 1-5"
+      timezone: "Asia/Taipei"
+
+concurrency:
+  group: dashboard-scheduled-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEFAULT_DASHBOARD_BASE_URL: "https://futures-dashboard-app.zeabur.app"
+      DASHBOARD_BASE_URL: ${{ vars.DASHBOARD_BASE_URL }}
+      DASHBOARD_REFRESH_TOKEN: ${{ secrets.DASHBOARD_REFRESH_TOKEN }}
+      INPUT_MODE: ${{ github.event.inputs.mode }}
+      INPUT_MIN_ATR_PERCENT: ${{ github.event.inputs.min_atr_percent }}
+      EVENT_SCHEDULE: ${{ github.event.schedule }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Decide refresh mode
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="intraday_snapshot"
+          case "${EVENT_SCHEDULE}" in
+            "5,20,35 14 * * 1-5")
+              mode="final_snapshot"
+              ;;
+            "50 14 * * 1-5")
+              mode="rebuild_trajectory"
+              ;;
+          esac
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${INPUT_MODE}" ]; then
+            mode="${INPUT_MODE}"
+          fi
+          min_atr="${INPUT_MIN_ATR_PERCENT:-3}"
+          echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
+          echo "min_atr_percent=${min_atr}" >> "${GITHUB_OUTPUT}"
+
+      - name: Call protected dashboard refresh endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DASHBOARD_REFRESH_TOKEN}" ]; then
+            echo "::error::Repository secret DASHBOARD_REFRESH_TOKEN is required."
+            exit 1
+          fi
+          base_url="${DASHBOARD_BASE_URL:-${DEFAULT_DASHBOARD_BASE_URL}}"
+          base_url="${base_url%/}"
+          mode="${{ steps.decide.outputs.mode }}"
+          min_atr="${{ steps.decide.outputs.min_atr_percent }}"
+          url="${base_url}/api/admin/refresh?mode=${mode}&min_atr_percent=${min_atr}"
+          echo "Calling ${base_url}/api/admin/refresh with mode=${mode}, min_atr_percent=${min_atr}"
+          curl \
+            --fail-with-body \
+            --show-error \
+            --silent \
+            --location \
+            --retry 2 \
+            --retry-delay 20 \
+            --max-time 600 \
+            --header "Authorization: Bearer ${DASHBOARD_REFRESH_TOKEN}" \
+            "${url}" \
+            --output response.json
+          cat response.json
+          python - <<'PY'
+          import json
+          import sys
+
+          with open("response.json", "r", encoding="utf-8") as response_file:
+              payload = json.load(response_file)
+          if payload.get("status") != "ok":
+              print("Refresh endpoint returned non-ok payload:", payload)
+              sys.exit(1)
+          if payload.get("mode") == "rebuild_trajectory" and int(payload.get("trajectory_snapshot_count") or 0) <= 0:
+              print("Trajectory rebuild returned no snapshots:", payload)
+              sys.exit(1)
+          print("Refresh OK:", payload.get("mode"), payload.get("as_of_date"), payload.get("trajectory_last_cutoff"))
+          PY

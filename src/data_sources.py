@@ -173,6 +173,25 @@ def fetch_fugle_futopt_quote(
     )
 
 
+def fetch_fugle_futopt_candles(
+    symbol: str,
+    api_key: str,
+    timeframe: str = "5",
+    session: Optional[str] = None,
+    timeout: int = 30,
+) -> Dict[str, object]:
+    """Fetch Fugle intraday futures/options candles for one ticker symbol."""
+    params: Dict[str, object] = {"timeframe": timeframe}
+    if session:
+        params["session"] = session
+    return _fetch_fugle_futopt_json(
+        path="/intraday/candles/{}".format(symbol),
+        api_key=api_key,
+        params=params,
+        timeout=timeout,
+    )
+
+
 def _fetch_fugle_futopt_json(
     path: str,
     api_key: str,

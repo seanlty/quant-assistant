@@ -39,6 +39,7 @@ python -m src.web_dashboard
 ```env
 FINMIND_API_TOKEN=your_finmind_token
 FUGLE_API_KEY=your_fugle_api_key
+DASHBOARD_REFRESH_TOKEN=long_random_refresh_token
 ```
 
 `FINMIND_API_KEY` 也可作為 FinMind token 變數名稱。
@@ -53,6 +54,8 @@ USE_TAIFEX_STOCK_LISTS=0
 ```
 
 這會控制交易時段 `/api/pool` 共用快取秒數。頁面會自動讀取同一份快照，避免每位使用者各自強制重打外部 API。
+
+GitHub Actions / 外部 cron 要觸發背景更新時，請呼叫受保護的 `/api/admin/refresh` endpoint，並在 Zeabur 與 GitHub repository secret 設定同一組 `DASHBOARD_REFRESH_TOKEN`。Zeabur Volume 與排程設定細節見 `docs/zeabur_scheduled_refresh.md`。
 
 ## 目錄用途
 

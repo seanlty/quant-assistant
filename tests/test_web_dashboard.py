@@ -16,6 +16,7 @@ from src.web_dashboard import (
     TAIPEI_TZ,
     add_fugle_contract_months,
     application,
+    build_intraday_trajectory_history_from_candles,
     build_fugle_quote_volume_history,
     build_daily_pool_snapshot,
     build_dashboard_response,
@@ -406,6 +407,231 @@ def test_intraday_trajectory_cache_prunes_to_recent_five_days():
         assert remaining[-1] == "trajectory_asof2026-06-07.json"
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def test_intraday_trajectory_cache_replace_history_preserves_source():
+    cache_dir = os.path.join(os.getcwd(), "data", "test-intraday-trajectory-{}".format(uuid.uuid4().hex))
+    try:
+        trajectory_cache = IntradayTrajectoryCache(cache_dir=cache_dir)
+        history = {
+            "version": 1,
+            "as_of_date": "2026-06-17",
+            "updated_at": "2026-06-17 14:50:00 GMT+8",
+            "source": {"type": "Fugle intraday candles"},
+            "snapshots": [
+                {
+                    "cutoff": "09:00",
+                    "captured_at": "2026-06-17 14:50:00 GMT+8",
+                    "status": "rebuilt_5m",
+                    "rows": [{"stock_id": "2330", "volume": 100, "spread_per": 1.0, "rank": 1}],
+                }
+            ],
+        }
+
+        payload = trajectory_cache.replace_history(date(2026, 6, 17), history)
+
+        assert payload["cache_hit"] is True
+        assert payload["source"]["type"] == "Fugle intraday candles"
+        assert payload["snapshots"][0]["status"] == "rebuilt_5m"
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def test_build_intraday_trajectory_history_from_candles_uses_cumulative_volume():
+    watchlist_rows = [
+        {
+            "stock_id": "2330",
+            "stock_name": "台積電",
+            "finmind_futures_id": "CDF",
+            "contract_type_label": "大型",
+            "close": 105,
+            "spread": 5,
+        },
+        {
+            "stock_id": "2317",
+            "stock_name": "鴻海",
+            "finmind_futures_id": "DHF",
+            "contract_type_label": "大型",
+            "close": 98,
+            "spread": -2,
+        },
+    ]
+    candle_rows = pd.DataFrame(
+        [
+            {
+                "as_of_date": date(2026, 6, 17),
+                "minute": 8 * 60 + 45,
+                "stock_id": "2330",
+                "stock_name": "台積電",
+                "finmind_futures_id": "CDF",
+                "contract_type_label": "大型",
+                "contract_date": "CDFG6",
+                "symbol": "CDFG6",
+                "close": 102,
+                "Trading_Volume": 100,
+            },
+            {
+                "as_of_date": date(2026, 6, 17),
+                "minute": 8 * 60 + 50,
+                "stock_id": "2330",
+                "stock_name": "台積電",
+                "finmind_futures_id": "CDF",
+                "contract_type_label": "大型",
+                "contract_date": "CDFG6",
+                "symbol": "CDFG6",
+                "close": 104,
+                "Trading_Volume": 50,
+            },
+            {
+                "as_of_date": date(2026, 6, 17),
+                "minute": 8 * 60 + 55,
+                "stock_id": "2330",
+                "stock_name": "台積電",
+                "finmind_futures_id": "CDF",
+                "contract_type_label": "大型",
+                "contract_date": "CDFG6",
+                "symbol": "CDFG6",
+                "close": 104,
+                "Trading_Volume": 0,
+            },
+            {
+                "as_of_date": date(2026, 6, 17),
+                "minute": 8 * 60 + 45,
+                "stock_id": "2317",
+                "stock_name": "鴻海",
+                "finmind_futures_id": "DHF",
+                "contract_type_label": "大型",
+                "contract_date": "DHFG6",
+                "symbol": "DHFG6",
+                "close": 99,
+                "Trading_Volume": 300,
+            },
+        ]
+    )
+
+    history = build_intraday_trajectory_history_from_candles(
+        date(2026, 6, 17),
+        watchlist_rows,
+        candle_rows,
+        now=datetime(2026, 6, 17, 14, 50, tzinfo=TAIPEI_TZ),
+    )
+
+    assert history["as_of_date"] == "2026-06-17"
+    assert history["snapshots"][0]["cutoff"] == "08:45"
+    assert history["snapshots"][0]["rows"][0]["stock_id"] == "2317"
+    assert history["snapshots"][0]["rows"][0]["rank"] == 1
+    assert history["snapshots"][1]["cutoff"] == "09:00"
+    tsmc = [row for row in history["snapshots"][1]["rows"] if row["stock_id"] == "2330"][0]
+    assert tsmc["volume"] == 150
+    assert tsmc["spread_per"] == 4.0
+
+
+def test_admin_refresh_requires_configured_token(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_REFRESH_TOKEN", "")
+    monkeypatch.setenv("DASHBOARD_ADMIN_TOKEN", "")
+
+    status, _, body = build_dashboard_response(
+        "/api/admin/refresh",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    payload = json.loads(body.decode("utf-8"))
+
+    assert status == 503
+    assert payload["status"] == "misconfigured"
+
+
+def test_admin_refresh_rejects_missing_or_wrong_bearer(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_REFRESH_TOKEN", "secret-token")
+
+    status, _, body = build_dashboard_response("/api/admin/refresh")
+    payload = json.loads(body.decode("utf-8"))
+    assert status == 401
+    assert payload["status"] == "unauthorized"
+
+    status, _, body = build_dashboard_response(
+        "/api/admin/refresh",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    payload = json.loads(body.decode("utf-8"))
+    assert status == 401
+    assert payload["status"] == "unauthorized"
+
+
+def test_admin_refresh_intraday_snapshot_uses_bearer_token(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_REFRESH_TOKEN", "secret-token")
+    captured = {}
+    snapshot = _minimal_snapshot(min_atr_percent=4.0)
+    snapshot.source["cache_kind"] = "intraday"
+    snapshot.source["snapshot_stage"] = "intraday"
+    snapshot.source["final_ready"] = False
+
+    def fake_get_snapshot(force_refresh=False, criteria=None, as_of_date=None):
+        captured["force_refresh"] = force_refresh
+        captured["criteria"] = criteria
+        captured["as_of_date"] = as_of_date
+        return snapshot
+
+    class FakeTrajectoryCache:
+        def append_snapshot(self, snapshot):
+            captured["snapshot"] = snapshot
+            return {
+                "version": 1,
+                "as_of_date": snapshot.as_of_date,
+                "snapshots": [{"cutoff": "09:00", "rows": [{"stock_id": "2330"}]}],
+                "cache_hit": True,
+            }
+
+    monkeypatch.setattr("src.web_dashboard.dashboard_cache.get_snapshot", fake_get_snapshot)
+    monkeypatch.setattr("src.web_dashboard.intraday_trajectory_cache", FakeTrajectoryCache())
+
+    status, _, body = build_dashboard_response(
+        "/api/admin/refresh",
+        "mode=intraday_snapshot&min_atr_percent=4&as_of=2026-06-17",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    payload = json.loads(body.decode("utf-8"))
+
+    assert status == 200
+    assert payload["status"] == "ok"
+    assert payload["mode"] == "intraday_snapshot"
+    assert payload["trajectory_snapshot_count"] == 1
+    assert captured["force_refresh"] is True
+    assert captured["criteria"].min_atr_percent == 4.0
+    assert captured["as_of_date"] == date(2026, 6, 17)
+
+
+def test_admin_refresh_rebuild_trajectory_uses_bearer_token(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_REFRESH_TOKEN", "secret-token")
+    captured = {}
+
+    def fake_rebuild(as_of_date=None, criteria=None, force_snapshot=False, timeout=60):
+        captured["as_of_date"] = as_of_date
+        captured["criteria"] = criteria
+        captured["force_snapshot"] = force_snapshot
+        return {
+            "version": 1,
+            "as_of_date": "2026-06-17",
+            "updated_at": "2026-06-17 14:50:00 GMT+8",
+            "snapshots": [{"cutoff": "13:30", "rows": [{"stock_id": "2330"}]}],
+            "cache_hit": True,
+            "source": {"type": "test"},
+        }
+
+    monkeypatch.setattr("src.web_dashboard.rebuild_intraday_trajectory_from_fugle", fake_rebuild)
+
+    status, _, body = build_dashboard_response(
+        "/api/admin/refresh",
+        "mode=rebuild_trajectory&as_of=2026-06-17&refresh_snapshot=1&min_atr_percent=3",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    payload = json.loads(body.decode("utf-8"))
+
+    assert status == 200
+    assert payload["status"] == "ok"
+    assert payload["mode"] == "rebuild_trajectory"
+    assert payload["trajectory_snapshot_count"] == 1
+    assert captured["as_of_date"] == date(2026, 6, 17)
+    assert captured["force_snapshot"] is True
 
 
 def test_contract_metadata_cache_round_trips_fugle_products():
