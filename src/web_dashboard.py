@@ -2715,7 +2715,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
   <title>每日股期股池</title>
   <style>
     :root {{
-      --bg: #f6f8fb;
+      --bg: #ffffff;
       --panel: #ffffff;
       --line: #d9e1ea;
       --text: #18211f;
@@ -3308,10 +3308,33 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       min-width: 0;
       min-height: 0;
       overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--scrollbar-thumb) var(--panel);
       padding: 6px 8px;
       background:
         repeating-linear-gradient(90deg, transparent 0 24%, rgba(100, 114, 118, 0.1) 24.2% 24.6%, transparent 24.8% 49%),
         var(--panel);
+    }}
+    .butterfly-wing::-webkit-scrollbar {{
+      width: 8px;
+      height: 8px;
+      background: var(--panel);
+    }}
+    .butterfly-wing::-webkit-scrollbar-track {{
+      background: var(--panel);
+    }}
+    .butterfly-wing::-webkit-scrollbar-thumb {{
+      min-height: 36px;
+      border: 2px solid var(--panel);
+      border-radius: 999px;
+      background-color: var(--scrollbar-thumb);
+      background-clip: padding-box;
+    }}
+    .butterfly-wing::-webkit-scrollbar-thumb:hover {{
+      background-color: var(--scrollbar-thumb-hover);
+    }}
+    .butterfly-wing::-webkit-scrollbar-corner {{
+      background: var(--panel);
     }}
     .butterfly-row {{
       display: grid;
@@ -5862,9 +5885,7 @@ def _dashboard_script() -> str:
   }
 
   function initThemeToggle() {
-    const savedTheme = localStorage.getItem("stock-futures-theme");
-    const preferredTheme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    applyTheme(savedTheme || preferredTheme);
+    applyTheme("light");
     const toggle = document.getElementById("theme-toggle");
     if (toggle) {
       toggle.addEventListener("click", () => {

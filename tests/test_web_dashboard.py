@@ -2457,6 +2457,10 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "renderTodayOverviewChart(payload.watchlist_rows || [])" in html
     assert "renderButterflyChart" in html
     assert "renderButterflyChart(payload.watchlist_rows || [])" in html
+    assert "--bg: #ffffff;" in html
+    assert 'applyTheme("light")' in html
+    assert "scrollbar-color: var(--scrollbar-thumb) var(--panel)" in html
+    assert ".butterfly-wing::-webkit-scrollbar-thumb" in html
     assert "const cx = clamp(scale.x(row.volumeRate)" in html
     assert "const cy = clamp(scale.y(row.spread_per)" in html
     assert "量能偏離 %" in html
