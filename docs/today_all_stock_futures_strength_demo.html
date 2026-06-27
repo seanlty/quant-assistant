@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>今日全部股期強弱勢排序 Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7f8;
+      --panel: #ffffff;
+      --ink: #17201d;
+      --muted: #66736f;
+      --line: #dce3df;
+      --soft: #eef3f0;
+      --up: #dc2626;
+      --down: #1d4ed8;
+      --flat: #6b7280;
+      --shadow: 0 18px 44px rgba(23, 32, 29, 0.08);
+      --row-h: 34px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    }
+
+    .page {
+      width: min(1500px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 22px 0 32px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 27px;
+      font-weight: 780;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .toolbar-left {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .segments {
+      display: inline-grid;
+      grid-auto-flow: column;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    button {
+      min-width: 72px;
+      height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 1px 7px rgba(23, 32, 29, 0.11);
+    }
+
+    .volume-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .volume-input {
+      width: 92px;
+      height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 8px;
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 760;
+      text-align: right;
+      outline: none;
+    }
+
+    .search,
+    .volume-input {
+      background: #fff;
+    }
+
+    .search {
+      width: min(360px, 42vw);
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 11px;
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .search:focus,
+    .volume-input:focus {
+      border-color: #6b938d;
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.13);
+    }
+
+    .summary {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .summary strong {
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .butterfly-card {
+      height: calc(100vh - 170px);
+      min-height: 620px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .butterfly-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+      min-height: 44px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .butterfly-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px;
+      font-size: 15px;
+      font-weight: 820;
+      line-height: 1.2;
+    }
+
+    .butterfly-title.up {
+      color: var(--up);
+      background: rgba(220, 38, 38, 0.08);
+    }
+
+    .butterfly-title.down {
+      color: var(--down);
+      background: rgba(29, 78, 216, 0.08);
+    }
+
+    .butterfly-title span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .butterfly-center {
+      background: var(--ink);
+      opacity: 0.78;
+    }
+
+    .butterfly-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+      min-height: 0;
+    }
+
+    .butterfly-wing {
+      display: grid;
+      grid-auto-rows: var(--row-h);
+      align-content: start;
+      gap: 3px;
+      min-width: 0;
+      padding: 9px 10px;
+      overflow: auto;
+      background:
+        repeating-linear-gradient(90deg, transparent 0 24%, rgba(102, 115, 111, 0.10) 24.2% 24.6%, transparent 24.8% 49%),
+        var(--panel);
+    }
+
+    .butterfly-row {
+      display: grid;
+      align-items: center;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .butterfly-row.up {
+      grid-template-columns: 230px minmax(0, 1fr);
+    }
+
+    .butterfly-row.down {
+      grid-template-columns: minmax(0, 1fr) 230px;
+    }
+
+    .butterfly-label {
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      gap: 7px;
+      align-items: center;
+      min-width: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .butterfly-row.up .butterfly-label {
+      padding-right: 9px;
+      text-align: left;
+    }
+
+    .butterfly-row.down .butterfly-label {
+      padding-left: 9px;
+      text-align: right;
+    }
+
+    .butterfly-rank {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .butterfly-name {
+      min-width: 0;
+    }
+
+    .butterfly-name strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      line-height: 1.18;
+      font-weight: 820;
+    }
+
+    .butterfly-name em {
+      display: block;
+      margin-top: 1px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-style: normal;
+      font-size: 11px;
+      line-height: 1.1;
+    }
+
+    .butterfly-label span {
+      font-size: 12px;
+      line-height: 1.1;
+      font-weight: 820;
+    }
+
+    .butterfly-row.up .butterfly-label span {
+      color: var(--up);
+    }
+
+    .butterfly-row.down .butterfly-label span {
+      color: var(--down);
+    }
+
+    .butterfly-track {
+      position: relative;
+      height: 16px;
+      min-width: 0;
+    }
+
+    .butterfly-bar {
+      position: absolute;
+      top: 0;
+      height: 16px;
+      min-width: 4px;
+      border-radius: 5px;
+      transition: width 220ms ease, transform 220ms ease;
+      box-shadow: inset 0 -8px 14px rgba(0, 0, 0, 0.08);
+    }
+
+    .butterfly-bar.up {
+      right: 0;
+      background: linear-gradient(90deg, #fb923c, #dc2626);
+    }
+
+    .butterfly-bar.down {
+      left: 0;
+      background: linear-gradient(90deg, #1d4ed8, #60a5fa);
+    }
+
+    .butterfly-volume {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--ink);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 820;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .butterfly-bar.up .butterfly-volume {
+      left: -7px;
+      transform: translate(-100%, -50%);
+      color: var(--up);
+    }
+
+    .butterfly-bar.down .butterfly-volume {
+      right: -7px;
+      transform: translate(100%, -50%);
+      color: var(--down);
+    }
+
+    .butterfly-empty {
+      align-self: center;
+      justify-self: center;
+      color: var(--muted);
+      font-size: 13px;
+      padding: 24px;
+    }
+
+    .flat-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .flat-tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--flat);
+      font-weight: 700;
+    }
+
+    @media (max-width: 980px) {
+      .page {
+        width: min(100vw - 20px, 760px);
+        padding-top: 16px;
+      }
+
+      header,
+      .toolbar,
+      .toolbar-left,
+      .summary {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      header,
+      .toolbar {
+        display: flex;
+      }
+
+      .meta,
+      .summary {
+        justify-content: flex-start;
+      }
+
+      .search {
+        width: 100%;
+      }
+
+      .butterfly-card {
+        height: auto;
+        min-height: 0;
+      }
+
+      .butterfly-head,
+      .butterfly-body {
+        grid-template-columns: 1fr;
+      }
+
+      .butterfly-center {
+        display: none;
+      }
+
+      .butterfly-wing {
+        max-height: 520px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .butterfly-row.up,
+      .butterfly-row.down {
+        grid-template-columns: 190px minmax(0, 1fr);
+      }
+
+      .butterfly-row.down .butterfly-label {
+        order: -1;
+        padding-left: 0;
+        padding-right: 9px;
+        text-align: left;
+      }
+
+      .butterfly-bar.down {
+        right: 0;
+        left: auto;
+      }
+
+      .butterfly-bar.down .butterfly-volume {
+        left: -7px;
+        right: auto;
+        transform: translate(-100%, -50%);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>今日全部股期強弱勢排序 Demo</h1>
+      <div class="meta">
+        <span class="pill" id="as-of-pill">--</span>
+        <span class="pill" id="count-pill">--</span>
+        <span class="pill" id="source-pill">production butterfly module shape</span>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="排序工具列">
+      <div class="toolbar-left">
+        <div class="segments" aria-label="產業分類">
+          <button type="button" data-industry="all" class="active">全部</button>
+          <button type="button" data-industry="electronics">電子股</button>
+          <button type="button" data-industry="non-electronics">非電子</button>
+        </div>
+        <div class="segments" aria-label="股期類型">
+          <button type="button" data-type="all" class="active">全部</button>
+          <button type="button" data-type="regular">大型</button>
+          <button type="button" data-type="small">小型</button>
+        </div>
+        <div class="segments" aria-label="顯示筆數">
+          <button type="button" data-limit="all" class="active">全部</button>
+          <button type="button" data-limit="30">前30</button>
+          <button type="button" data-limit="15">前15</button>
+        </div>
+        <label class="volume-filter" for="min-volume">
+          成交口數 ≥
+          <input class="volume-input" id="min-volume" type="number" min="0" step="100" value="500" inputmode="numeric">
+        </label>
+        <input class="search" id="search" type="search" placeholder="搜尋代號或名稱">
+      </div>
+      <div class="summary">
+        <span>強 <strong id="up-count">0</strong></span>
+        <span>弱 <strong id="down-count">0</strong></span>
+        <span>平 <strong id="flat-count">0</strong></span>
+      </div>
+    </section>
+
+    <section class="butterfly-card" aria-label="強弱勢排序">
+      <div class="butterfly-head">
+        <div class="butterfly-title up">強勢股 <span id="up-title-count">0</span></div>
+        <div class="butterfly-center"></div>
+        <div class="butterfly-title down">弱勢股 <span id="down-title-count">0</span></div>
+      </div>
+      <div class="butterfly-body">
+        <div class="butterfly-wing up" id="butterfly-up-wing"></div>
+        <div class="butterfly-center"></div>
+        <div class="butterfly-wing down" id="butterfly-down-wing"></div>
+      </div>
+    </section>
+
+    <section class="flat-strip" id="flat-strip"></section>
+  </main>
+
+  <script src="today_stock_industry_map_demo.js"></script>
+  <script src="today_all_stock_futures_strength_demo_data.js"></script>
+  <script>
+    const BUTTERFLY_SIDE_LIMIT = Number.POSITIVE_INFINITY;
+    const state = { industry: "all", type: "all", limit: "all", minVolume: 500, query: "" };
+    const payload = window.TODAY_ALL_STOCK_FUTURES_STRENGTH_DATA || { rows: [] };
+    const industryPayload = window.TODAY_STOCK_INDUSTRY_MAP_DEMO || { map: {} };
+    const industryMap = industryPayload.map || {};
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[char]));
+    }
+
+    function numberOrNull(value) {
+      if (value === null || value === undefined || value === "") return null;
+      const number = Number(String(value).replace(/,/g, ""));
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function formatNumber(value, digits = 0) {
+      const number = numberOrNull(value);
+      if (number === null) return "--";
+      return number.toLocaleString("zh-TW", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+      });
+    }
+
+    function formatSignedPercent(value) {
+      const number = numberOrNull(value);
+      if (number === null) return "--";
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`;
+    }
+
+    function contractMatchesType(row) {
+      if (state.type === "all") return true;
+      const raw = `${row.contract_type || ""} ${row.contract_type_label || ""}`;
+      if (state.type === "regular") return raw.includes("regular") || raw.includes("大型");
+      if (state.type === "small") return raw.includes("small") || raw.includes("小型");
+      return true;
+    }
+
+    function industryInfo(row) {
+      return industryMap[String(row.stock_id || "").trim()] || {
+        industry_category: "",
+        industry_group: "未分類"
+      };
+    }
+
+    function industryMatches(row) {
+      if (state.industry === "all") return true;
+      const group = industryInfo(row).industry_group || "未分類";
+      if (state.industry === "electronics") return group === "電子股";
+      if (state.industry === "non-electronics") return group !== "電子股";
+      return true;
+    }
+
+    function queryMatches(row) {
+      const query = state.query.trim().toLowerCase();
+      if (!query) return true;
+      return [
+        row.stock_id,
+        row.stock_name,
+        row.futures_id,
+        row.contract_type_label
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    }
+
+    function volumeMatches(row) {
+      const minVolume = Number(state.minVolume);
+      if (!Number.isFinite(minVolume) || minVolume <= 0) return true;
+      const volume = numberOrNull(row.volume);
+      return volume !== null && volume >= minVolume;
+    }
+
+    function filteredRows(rows) {
+      return (rows || []).filter((row) => (
+        industryMatches(row)
+        && contractMatchesType(row)
+        && volumeMatches(row)
+        && queryMatches(row)
+      ));
+    }
+
+    function butterflySourceRows(rows) {
+      return filteredRows(rows)
+        .map((row) => {
+          const volume = numberOrNull(row.volume);
+          const spreadPer = numberOrNull(row.spread_per);
+          const stockId = String(row.stock_id || "").trim();
+          if (!stockId || volume === null || spreadPer === null) return null;
+          return {
+            ...row,
+            stock_id: stockId,
+            stock_name: String(row.stock_name || stockId),
+            futures_id: String(row.futures_id || ""),
+            contract_type_label: String(row.contract_type_label || ""),
+            industry_category: industryInfo(row).industry_category || "",
+            industry_group: industryInfo(row).industry_group || "未分類",
+            volume,
+            spread_per: spreadPer
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.volume - a.volume || a.stock_id.localeCompare(b.stock_id));
+    }
+
+    function applyDisplayLimit(rows) {
+      if (state.limit === "all") return rows;
+      return rows.slice(0, Number(state.limit));
+    }
+
+    function butterflyWingRows(rows, direction) {
+      const source = butterflySourceRows(rows);
+      if (direction === "up") {
+        return applyDisplayLimit(source
+          .filter((row) => row.spread_per > 0)
+          .sort((a, b) => b.spread_per - a.spread_per || b.volume - a.volume)
+          .slice(0, BUTTERFLY_SIDE_LIMIT));
+      }
+      return applyDisplayLimit(source
+        .filter((row) => row.spread_per < 0)
+        .sort((a, b) => a.spread_per - b.spread_per || b.volume - a.volume)
+        .slice(0, BUTTERFLY_SIDE_LIMIT));
+    }
+
+    function stockMeta(row) {
+      return [row.stock_id, row.futures_id, row.contract_type_label, row.industry_category]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    function renderButterflyWing(rows, direction, maxVolume) {
+      if (!rows.length) {
+        return '<div class="butterfly-empty">尚無符合標的</div>';
+      }
+      return rows.map((row, index) => {
+        const width = Math.max(3, row.volume / maxVolume * 100);
+        const label = `<div class="butterfly-label">
+          <div class="butterfly-rank">#${index + 1}</div>
+          <div class="butterfly-name"><strong>${escapeHtml(row.stock_name)}</strong><em>${escapeHtml(stockMeta(row))}</em></div>
+          <span>${formatSignedPercent(row.spread_per)}</span>
+        </div>`;
+        const title = `${row.stock_name}｜${formatSignedPercent(row.spread_per)}｜成交口數 ${formatNumber(row.volume, 0)}｜${stockMeta(row)}`;
+        const bar = `<div class="butterfly-track"><div class="butterfly-bar ${direction}" style="width:${width.toFixed(1)}%" title="${escapeHtml(title)}"><span class="butterfly-volume">${formatNumber(row.volume, 0)}</span></div></div>`;
+        return `<div class="butterfly-row ${direction}" data-butterfly-key="${escapeHtml(row.stock_id)}">${direction === "up" ? label + bar : bar + label}</div>`;
+      }).join("");
+    }
+
+    function renderFlatRows(source) {
+      const flat = source
+        .filter((row) => row.spread_per === 0)
+        .sort((a, b) => b.volume - a.volume || a.stock_id.localeCompare(b.stock_id));
+      const strip = document.getElementById("flat-strip");
+      if (!strip) return;
+      strip.innerHTML = flat.length
+        ? `<span>持平</span>${flat.map((row) => `<span class="flat-tag">${escapeHtml(row.stock_name)} ${formatNumber(row.volume, 0)}</span>`).join("")}`
+        : "";
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function renderButterflyChart(rows) {
+      const upWing = document.getElementById("butterfly-up-wing");
+      const downWing = document.getElementById("butterfly-down-wing");
+      if (!upWing || !downWing) return;
+      const source = butterflySourceRows(rows);
+      const allUp = source.filter((row) => row.spread_per > 0);
+      const allDown = source.filter((row) => row.spread_per < 0);
+      const allFlat = source.filter((row) => row.spread_per === 0);
+      const upRows = butterflyWingRows(rows, "up");
+      const downRows = butterflyWingRows(rows, "down");
+      const maxVolume = Math.max(...source.map((row) => row.volume), 1);
+      upWing.innerHTML = renderButterflyWing(upRows, "up", maxVolume);
+      downWing.innerHTML = renderButterflyWing(downRows, "down", maxVolume);
+      setText("up-count", allUp.length);
+      setText("down-count", allDown.length);
+      setText("flat-count", allFlat.length);
+      setText("up-title-count", state.limit === "all" ? `${allUp.length} 檔` : `${upRows.length} / ${allUp.length}`);
+      setText("down-title-count", state.limit === "all" ? `${allDown.length} 檔` : `${downRows.length} / ${allDown.length}`);
+      setText("count-pill", `${source.length} 檔`);
+      renderFlatRows(source);
+    }
+
+    function render() {
+      setText("as-of-pill", `資料日 ${payload.as_of_date || "2026-06-26"}`);
+      setText("source-pill", payload.source && payload.source.snapshot_stage ? `cache ${payload.source.snapshot_stage}` : "demo data");
+      renderButterflyChart(payload.rows || []);
+    }
+
+    document.querySelectorAll("[data-type]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-type]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.type = button.dataset.type;
+        render();
+      });
+    });
+
+    document.querySelectorAll("[data-industry]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-industry]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.industry = button.dataset.industry;
+        render();
+      });
+    });
+
+    document.querySelectorAll("[data-limit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-limit]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.limit = button.dataset.limit;
+        render();
+      });
+    });
+
+    document.getElementById("search").addEventListener("input", (event) => {
+      state.query = event.target.value;
+      render();
+    });
+
+    document.getElementById("min-volume").addEventListener("input", (event) => {
+      const value = Number(event.target.value);
+      state.minVolume = Number.isFinite(value) && value > 0 ? value : 0;
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>

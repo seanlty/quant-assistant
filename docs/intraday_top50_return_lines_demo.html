@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>盤中 Top50 漲跌幅折線 Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f4;
+      --panel: #ffffff;
+      --ink: #18201d;
+      --muted: #65706c;
+      --line: #d9ded8;
+      --accent: #0f766e;
+      --gain: #b42318;
+      --loss: #2870c8;
+      --flat: #6b7280;
+      --shadow: 0 18px 45px rgba(24, 32, 29, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    }
+
+    .page {
+      width: min(1480px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 24px 0 32px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 0 2px 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid #d8ded8;
+      border-radius: 999px;
+      background: #fff;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 14px;
+      border: 1px solid #dfe4df;
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .segments {
+      display: inline-grid;
+      grid-auto-flow: column;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 8px;
+      background: #eef2ee;
+    }
+
+    button {
+      min-width: 74px;
+      height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 1px 6px rgba(24, 32, 29, 0.10);
+    }
+
+    .focus-label {
+      min-width: 260px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .chart-panel,
+    .legend-panel {
+      border: 1px solid #dfe4df;
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .chart-panel {
+      min-height: 650px;
+      padding: 18px 18px 10px;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .axis path,
+    .axis line,
+    .grid line {
+      stroke: var(--line);
+      stroke-width: 1;
+      shape-rendering: crispEdges;
+    }
+
+    .grid line {
+      stroke-dasharray: 3 5;
+    }
+
+    .axis text,
+    .axis-label {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+
+    .zero-line {
+      stroke: #919a96;
+      stroke-width: 1.4;
+      stroke-dasharray: 6 5;
+    }
+
+    .series {
+      fill: none;
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0.82;
+      transition: opacity 120ms ease, stroke-width 120ms ease;
+      cursor: pointer;
+    }
+
+    .series.muted {
+      opacity: 0.12;
+      stroke-width: 1.5;
+    }
+
+    .series.focused {
+      opacity: 1;
+      stroke-width: 4;
+    }
+
+    .dot {
+      fill: #fff;
+      stroke-width: 2;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 120ms ease;
+    }
+
+    .dot.visible {
+      opacity: 1;
+    }
+
+    .legend-panel {
+      display: flex;
+      min-height: 650px;
+      flex-direction: column;
+    }
+
+    .legend-head {
+      display: grid;
+      grid-template-columns: 48px 1fr 76px;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid #e5e9e5;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .legend-list {
+      overflow: auto;
+      max-height: 592px;
+    }
+
+    .legend-row {
+      display: grid;
+      grid-template-columns: 48px 1fr 76px;
+      gap: 8px;
+      align-items: center;
+      min-height: 42px;
+      padding: 8px 14px;
+      border-bottom: 1px solid #eef1ee;
+      cursor: pointer;
+    }
+
+    .legend-row:hover,
+    .legend-row.focused {
+      background: #f4f7f5;
+    }
+
+    .rank {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex: 0 0 10px;
+    }
+
+    .name {
+      min-width: 0;
+    }
+
+    .name strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+      font-weight: 720;
+    }
+
+    .name span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .return {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-size: 14px;
+      font-weight: 720;
+    }
+
+    .return.gain { color: var(--gain); }
+    .return.loss { color: var(--loss); }
+
+    .tooltip {
+      position: fixed;
+      z-index: 10;
+      min-width: 190px;
+      padding: 10px 12px;
+      border: 1px solid #dfe4df;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 12px 28px rgba(24, 32, 29, 0.16);
+      color: var(--ink);
+      font-size: 13px;
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(12px, 12px);
+      transition: opacity 100ms ease;
+    }
+
+    .tooltip.visible { opacity: 1; }
+    .tooltip strong { display: block; font-size: 14px; margin-bottom: 6px; }
+    .tooltip div { display: flex; justify-content: space-between; gap: 18px; margin-top: 3px; }
+    .tooltip span:last-child { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+    .empty {
+      min-height: 360px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    @media (max-width: 980px) {
+      .page {
+        width: min(100vw - 20px, 760px);
+        padding-top: 16px;
+      }
+
+      header,
+      .toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .meta {
+        justify-content: flex-start;
+      }
+
+      .focus-label {
+        min-width: 0;
+        text-align: left;
+      }
+
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .chart-panel,
+      .legend-panel {
+        min-height: 0;
+      }
+
+      .legend-list {
+        max-height: 430px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>盤中 Top50 漲跌幅折線 Demo</h1>
+      <div class="meta">
+        <span class="pill" id="as-of-pill">--</span>
+        <span class="pill" id="snapshot-pill">--</span>
+        <span class="pill" id="source-pill">intraday trajectory cache</span>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="圖表工具列">
+      <div class="segments" aria-label="顯示範圍">
+        <button type="button" data-limit="10">Top10</button>
+        <button type="button" data-limit="25">Top25</button>
+        <button type="button" data-limit="50" class="active">Top50</button>
+      </div>
+      <div class="focus-label" id="focus-label">最後截面 Top50</div>
+    </section>
+
+    <section class="layout">
+      <div class="chart-panel">
+        <svg id="chart" viewBox="0 0 1060 640" role="img" aria-label="盤中 Top50 漲跌幅折線圖"></svg>
+      </div>
+      <aside class="legend-panel" aria-label="Top50 清單">
+        <div class="legend-head">
+          <span>排名</span>
+          <span>股票期貨</span>
+          <span>13:45</span>
+        </div>
+        <div class="legend-list" id="legend"></div>
+      </aside>
+    </section>
+  </main>
+  <div class="tooltip" id="tooltip"></div>
+
+  <script src="intraday_top50_return_lines_demo_data.js"></script>
+  <script>
+    const DEFAULT_AS_OF = "2026-06-26";
+    const params = new URLSearchParams(window.location.search);
+    const asOfDate = params.get("as_of") || DEFAULT_AS_OF;
+    const dataUrl = `../data/cache/intraday_trajectory/trajectory_asof${asOfDate}.json`;
+    const palette = [
+      "#0f766e", "#b42318", "#2870c8", "#8a5a00", "#7c3aed",
+      "#c2410c", "#047857", "#be185d", "#2563eb", "#4d7c0f"
+    ];
+    const neutral = "#7d8781";
+    const chart = document.getElementById("chart");
+    const legend = document.getElementById("legend");
+    const tooltip = document.getElementById("tooltip");
+    const focusLabel = document.getElementById("focus-label");
+    let state = { limit: 50, focusId: null, series: [], times: [] };
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[char]));
+    }
+
+    function fmtPct(value) {
+      if (value == null || Number.isNaN(Number(value))) return "--";
+      const n = Number(value);
+      return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
+    }
+
+    function fmtVolume(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "--";
+      return Math.round(n).toLocaleString("zh-TW");
+    }
+
+    function pointColor(item, index) {
+      return index < palette.length ? palette[index] : neutral;
+    }
+
+    function buildSeries(history) {
+      const snapshots = Array.isArray(history.snapshots) ? history.snapshots : [];
+      const finalSnapshot = snapshots[snapshots.length - 1] || { rows: [] };
+      const finalRows = Array.isArray(finalSnapshot.rows) ? finalSnapshot.rows.slice(0, 50) : [];
+      const finalIds = finalRows.map((row) => String(row.stock_id));
+      const finalMeta = new Map(finalRows.map((row) => [String(row.stock_id), row]));
+      const times = snapshots.map((snapshot) => String(snapshot.cutoff || ""));
+      const rowsByTime = snapshots.map((snapshot) => {
+        const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
+        return new Map(rows.map((row) => [String(row.stock_id), row]));
+      });
+
+      const series = finalIds.map((stockId, index) => {
+        const meta = finalMeta.get(stockId) || {};
+        const points = rowsByTime.map((rows, timeIndex) => {
+          const row = rows.get(stockId);
+          if (!row || row.spread_per == null) return null;
+          return {
+            time: times[timeIndex],
+            value: Number(row.spread_per),
+            rank: Number(row.rank),
+            volume: Number(row.volume),
+            close: Number(row.close)
+          };
+        });
+        return {
+          stockId,
+          stockName: meta.stock_name || stockId,
+          futuresId: meta.futures_id || "",
+          contractType: meta.contract_type_label || "",
+          finalRank: Number(meta.rank || index + 1),
+          finalValue: Number(meta.spread_per),
+          finalVolume: Number(meta.volume),
+          color: pointColor(meta, index),
+          points
+        };
+      });
+      return { series, times, snapshots };
+    }
+
+    function linePath(points, xScale, yScale) {
+      let path = "";
+      let open = false;
+      points.forEach((point, index) => {
+        if (!point || !Number.isFinite(point.value)) {
+          open = false;
+          return;
+        }
+        const x = xScale(index);
+        const y = yScale(point.value);
+        path += `${open ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+        open = true;
+      });
+      return path;
+    }
+
+    function niceTicks(min, max) {
+      const span = Math.max(1, max - min);
+      const raw = span / 6;
+      const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+      const step = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((v) => v >= raw) || 10 * pow;
+      const start = Math.floor(min / step) * step;
+      const end = Math.ceil(max / step) * step;
+      const ticks = [];
+      for (let value = start; value <= end + step / 2; value += step) {
+        ticks.push(Number(value.toFixed(4)));
+      }
+      return ticks;
+    }
+
+    function updateFocus(stockId) {
+      state.focusId = stockId;
+      const focused = state.series.find((item) => item.stockId === stockId);
+      focusLabel.textContent = focused
+        ? `#${focused.finalRank} ${focused.stockName} ${fmtPct(focused.finalValue)}`
+        : `最後截面 Top${state.limit}`;
+
+      document.querySelectorAll(".series").forEach((path) => {
+        const active = !stockId || path.dataset.stockId === stockId;
+        path.classList.toggle("muted", Boolean(stockId) && !active);
+        path.classList.toggle("focused", Boolean(stockId) && active);
+      });
+      document.querySelectorAll(".dot").forEach((dot) => {
+        dot.classList.toggle("visible", Boolean(stockId) && dot.dataset.stockId === stockId);
+      });
+      document.querySelectorAll(".legend-row").forEach((row) => {
+        row.classList.toggle("focused", row.dataset.stockId === stockId);
+      });
+    }
+
+    function showTooltip(event, item, point) {
+      tooltip.innerHTML = `
+        <strong>${esc(item.stockName)} ${esc(item.futuresId)}</strong>
+        <div><span>時間</span><span>${esc(point.time)}</span></div>
+        <div><span>漲跌幅</span><span>${fmtPct(point.value)}</span></div>
+        <div><span>排名</span><span>#${Number.isFinite(point.rank) ? point.rank : "--"}</span></div>
+        <div><span>量</span><span>${fmtVolume(point.volume)}</span></div>
+      `;
+      tooltip.style.left = `${event.clientX}px`;
+      tooltip.style.top = `${event.clientY}px`;
+      tooltip.classList.add("visible");
+    }
+
+    function hideTooltip() {
+      tooltip.classList.remove("visible");
+    }
+
+    function renderLegend(series) {
+      legend.innerHTML = series.map((item) => `
+        <div class="legend-row" data-stock-id="${esc(item.stockId)}">
+          <div class="rank"><span class="swatch" style="background:${esc(item.color)}"></span>#${item.finalRank}</div>
+          <div class="name">
+            <strong>${esc(item.stockName)}</strong>
+            <span>${esc(item.stockId)} ${esc(item.futuresId)} ${esc(item.contractType)}</span>
+          </div>
+          <div class="return ${item.finalValue >= 0 ? "gain" : "loss"}">${fmtPct(item.finalValue)}</div>
+        </div>
+      `).join("");
+
+      legend.querySelectorAll(".legend-row").forEach((row) => {
+        row.addEventListener("mouseenter", () => updateFocus(row.dataset.stockId));
+        row.addEventListener("mouseleave", () => updateFocus(null));
+      });
+    }
+
+    function renderChart() {
+      const visible = state.series.slice(0, state.limit);
+      if (!visible.length || !state.times.length) {
+        chart.innerHTML = `<foreignObject x="0" y="0" width="1060" height="640"><div xmlns="http://www.w3.org/1999/xhtml" class="empty">沒有可繪製資料</div></foreignObject>`;
+        return;
+      }
+
+      const width = 1060;
+      const height = 640;
+      const margin = { top: 26, right: 34, bottom: 72, left: 70 };
+      const plotW = width - margin.left - margin.right;
+      const plotH = height - margin.top - margin.bottom;
+      const values = visible.flatMap((item) => item.points.filter(Boolean).map((point) => point.value));
+      const min = Math.min(-0.5, ...values);
+      const max = Math.max(0.5, ...values);
+      const pad = Math.max(0.4, (max - min) * 0.08);
+      const yMin = min - pad;
+      const yMax = max + pad;
+      const ticks = niceTicks(yMin, yMax);
+      const xScale = (index) => margin.left + (state.times.length === 1 ? 0 : (index / (state.times.length - 1)) * plotW);
+      const yScale = (value) => margin.top + ((yMax - value) / (yMax - yMin)) * plotH;
+      const zeroY = yScale(0);
+
+      const yGrid = ticks.map((tick) => `
+        <g class="grid">
+          <line x1="${margin.left}" y1="${yScale(tick).toFixed(1)}" x2="${width - margin.right}" y2="${yScale(tick).toFixed(1)}"></line>
+        </g>
+        <text class="axis-label" x="${margin.left - 10}" y="${(yScale(tick) + 4).toFixed(1)}" text-anchor="end">${fmtPct(tick)}</text>
+      `).join("");
+
+      const xTicks = state.times.map((time, index) => {
+        const isShown = index % 2 === 0 || index === state.times.length - 1;
+        if (!isShown) return "";
+        return `
+          <g class="axis">
+            <line x1="${xScale(index).toFixed(1)}" y1="${margin.top + plotH}" x2="${xScale(index).toFixed(1)}" y2="${margin.top + plotH + 6}"></line>
+            <text x="${xScale(index).toFixed(1)}" y="${margin.top + plotH + 26}" text-anchor="middle">${esc(time)}</text>
+          </g>
+        `;
+      }).join("");
+
+      const lines = visible.map((item) => {
+        const path = linePath(item.points, xScale, yScale);
+        return `<path class="series" data-stock-id="${esc(item.stockId)}" d="${path}" stroke="${esc(item.color)}"></path>`;
+      }).join("");
+
+      const dots = visible.flatMap((item) => item.points.map((point, index) => {
+        if (!point) return "";
+        return `<circle class="dot" data-stock-id="${esc(item.stockId)}" cx="${xScale(index).toFixed(1)}" cy="${yScale(point.value).toFixed(1)}" r="4.5" stroke="${esc(item.color)}"></circle>`;
+      })).join("");
+
+      chart.innerHTML = `
+        <rect x="${margin.left}" y="${margin.top}" width="${plotW}" height="${plotH}" fill="#fff"></rect>
+        ${yGrid}
+        <line class="zero-line" x1="${margin.left}" y1="${zeroY.toFixed(1)}" x2="${width - margin.right}" y2="${zeroY.toFixed(1)}"></line>
+        <g class="axis">
+          <line x1="${margin.left}" y1="${margin.top + plotH}" x2="${width - margin.right}" y2="${margin.top + plotH}"></line>
+          <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotH}"></line>
+          ${xTicks}
+          <text class="axis-label" x="${margin.left + plotW / 2}" y="${height - 18}" text-anchor="middle">時間</text>
+          <text class="axis-label" transform="translate(20 ${margin.top + plotH / 2}) rotate(-90)" text-anchor="middle">漲跌幅</text>
+        </g>
+        <g>${lines}</g>
+        <g>${dots}</g>
+      `;
+
+      chart.querySelectorAll(".series").forEach((path) => {
+        path.addEventListener("mouseenter", (event) => {
+          const item = visible.find((entry) => entry.stockId === path.dataset.stockId);
+          updateFocus(path.dataset.stockId);
+          if (item) {
+            const lastPoint = [...item.points].reverse().find(Boolean);
+            if (lastPoint) showTooltip(event, item, lastPoint);
+          }
+        });
+        path.addEventListener("mousemove", (event) => {
+          const item = visible.find((entry) => entry.stockId === path.dataset.stockId);
+          if (!item) return;
+          const lastPoint = [...item.points].reverse().find(Boolean);
+          if (lastPoint) showTooltip(event, item, lastPoint);
+        });
+        path.addEventListener("mouseleave", () => {
+          updateFocus(null);
+          hideTooltip();
+        });
+      });
+    }
+
+    function render(history) {
+      const built = buildSeries(history);
+      state.series = built.series;
+      state.times = built.times;
+      const snapshots = built.snapshots;
+      document.getElementById("as-of-pill").textContent = `資料日 ${history.as_of_date || asOfDate}`;
+      document.getElementById("snapshot-pill").textContent = `${snapshots.length} 個截面`;
+      const source = history.source && history.source.mode ? history.source.mode : "intraday trajectory cache";
+      document.getElementById("source-pill").textContent = source;
+      renderLegend(state.series);
+      renderChart();
+    }
+
+    document.querySelectorAll("[data-limit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-limit]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.limit = Number(button.dataset.limit);
+        updateFocus(null);
+        renderChart();
+      });
+    });
+
+    function loadHistory() {
+      const bundled = window.INTRADAY_TOP50_DEMO_DATA;
+      if (bundled && bundled.as_of_date === asOfDate) {
+        return Promise.resolve(bundled);
+      }
+      return fetch(dataUrl).then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      });
+    }
+
+    loadHistory()
+      .then(render)
+      .catch((error) => {
+        chart.innerHTML = `<foreignObject x="0" y="0" width="1060" height="640"><div xmlns="http://www.w3.org/1999/xhtml" class="empty">讀取 ${esc(dataUrl)} 失敗：${esc(error.message)}</div></foreignObject>`;
+      });
+  </script>
+</body>
+</html>

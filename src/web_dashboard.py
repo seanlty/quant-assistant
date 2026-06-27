@@ -24,6 +24,7 @@ try:
         FINMIND_DATA_URL,
         fetch_finmind_futopt_daily_info,
         fetch_finmind_futures_daily,
+        fetch_finmind_stock_info,
         fetch_finmind_stock_prices,
         fetch_fugle_futopt_candles,
         fetch_fugle_futopt_products,
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover
         FINMIND_DATA_URL,
         fetch_finmind_futopt_daily_info,
         fetch_finmind_futures_daily,
+        fetch_finmind_stock_info,
         fetch_finmind_stock_prices,
         fetch_fugle_futopt_candles,
         fetch_fugle_futopt_products,
@@ -57,7 +59,7 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_CRITERIA = StockPoolCriteria()
 MIN_ATR_PERCENT_OPTIONS = tuple(value / 10 for value in range(20, 51, 5))
 TODAY_OVERVIEW_TOP_N = 50
-DASHBOARD_CACHE_SCHEMA_VERSION = 4
+DASHBOARD_CACHE_SCHEMA_VERSION = 5
 CACHE_KIND_FINAL = "final"
 CACHE_KIND_INTRADAY = "intraday"
 INTRADAY_OPEN_MINUTES = 8 * 60 + 45
@@ -67,9 +69,26 @@ INTRADAY_TRAJECTORY_TOP_N = 50
 INTRADAY_TRAJECTORY_RETENTION_DAYS = 5
 CONTRACT_METADATA_CACHE_SCHEMA_VERSION = 1
 DEFAULT_CONTRACT_METADATA_CACHE_SECONDS = 3 * 24 * 60 * 60
+STOCK_INDUSTRY_MAP_CACHE_SCHEMA_VERSION = 1
+DEFAULT_STOCK_INDUSTRY_MAP_CACHE_SECONDS = 7 * 24 * 60 * 60
 FINAL_MIN_PRODUCT_COVERAGE = 0.7
 FINAL_MIN_PRODUCTS = 20
 ADMIN_REFRESH_TOKEN_ENV = "DASHBOARD_REFRESH_TOKEN"
+ELECTRONICS_INDUSTRY_CATEGORIES = {
+    "半導體業",
+    "電子零組件業",
+    "電腦及週邊設備業",
+    "光電業",
+    "通信網路業",
+    "電子通路業",
+    "資訊服務業",
+    "其他電子業",
+    "電子工業",
+    "電子商務業",
+    "其他電子類",
+    "數位雲端",
+    "數位雲端類",
+}
 FUTURES_PRODUCT_HISTORY_COLUMNS = [
     "date",
     "stock_id",
@@ -300,6 +319,8 @@ def is_snapshot_cache_compatible(snapshot: DashboardSnapshot) -> bool:
             return False
         if any("volume_rank_5d" not in row for row in rows):
             return False
+    if any("industry_category" not in row or "industry_group" not in row for row in snapshot.watchlist_rows):
+        return False
     if snapshot.source.get("cache_schema_version") != DASHBOARD_CACHE_SCHEMA_VERSION:
         return False
     if snapshot.source.get("rank_sequence_fallback"):
@@ -466,6 +487,125 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)) or default)
     except ValueError:
         return default
+
+
+def industry_group_from_category(category: object) -> str:
+    text = _string_value(category).strip()
+    if not text:
+        return "未分類"
+    if (
+        text in ELECTRONICS_INDUSTRY_CATEGORIES
+        or "電子" in text
+        or "半導體" in text
+        or "光電" in text
+        or "通信網路" in text
+        or "資訊服務" in text
+        or "電腦" in text
+    ):
+        return "電子股"
+    return "非電子"
+
+
+def build_stock_industry_map(stock_info: pd.DataFrame) -> Dict[str, Dict[str, str]]:
+    if stock_info is None or stock_info.empty:
+        return {}
+
+    df = stock_info.copy()
+    id_column = "stock_id" if "stock_id" in df.columns else "data_id" if "data_id" in df.columns else None
+    name_column = "stock_name" if "stock_name" in df.columns else "name" if "name" in df.columns else None
+    industry_column = "industry_category" if "industry_category" in df.columns else "industry" if "industry" in df.columns else None
+    if id_column is None:
+        return {}
+
+    df["_stock_id"] = df[id_column].map(lambda value: _string_value(value).strip())
+    df["_stock_name"] = df[name_column].map(lambda value: _string_value(value).strip()) if name_column else ""
+    df["_industry_category"] = df[industry_column].map(lambda value: _string_value(value).strip()) if industry_column else ""
+    df["_type"] = df["type"].map(lambda value: _string_value(value).strip()) if "type" in df.columns else ""
+    df["_date_text"] = df["date"].map(lambda value: _date_value(value)) if "date" in df.columns else ""
+    df["_has_industry"] = df["_industry_category"].astype(str).str.len() > 0
+    df = df[df["_stock_id"].astype(str).str.len() > 0].copy()
+    if df.empty:
+        return {}
+
+    df = df.sort_values(["_stock_id", "_has_industry", "_date_text"], ascending=[True, True, True])
+    industry_map: Dict[str, Dict[str, str]] = {}
+    for _, row in df.iterrows():
+        stock_id = _string_value(row.get("_stock_id")).strip()
+        category = _string_value(row.get("_industry_category")).strip()
+        existing = industry_map.get(stock_id)
+        if existing and existing.get("industry_category") and not category:
+            continue
+        industry_map[stock_id] = {
+            "stock_id": stock_id,
+            "stock_name": _string_value(row.get("_stock_name")).strip(),
+            "industry_category": category,
+            "industry_group": industry_group_from_category(category),
+            "type": _string_value(row.get("_type")).strip(),
+            "date": _string_value(row.get("_date_text")).strip(),
+        }
+    return industry_map
+
+
+def enrich_watchlist_records_with_industry(
+    records: List[Dict[str, object]],
+    industry_map: Dict[str, Dict[str, str]],
+) -> List[Dict[str, object]]:
+    enriched = []
+    for row in records or []:
+        next_row = dict(row)
+        stock_id = _string_value(next_row.get("stock_id")).strip()
+        industry = industry_map.get(stock_id, {}) if isinstance(industry_map, dict) else {}
+        category = _string_value(industry.get("industry_category")).strip()
+        next_row["industry_category"] = category
+        next_row["industry_group"] = industry_group_from_category(category)
+        enriched.append(next_row)
+    return enriched
+
+
+def _industry_group_counts(rows: List[Dict[str, object]]) -> Dict[str, int]:
+    counts = {"電子股": 0, "非電子": 0, "未分類": 0}
+    for row in rows or []:
+        group = industry_group_from_category(row.get("industry_category"))
+        counts[group] = counts.get(group, 0) + 1
+    return counts
+
+
+def load_stock_industry_map(token: Optional[str], timeout: int = 60) -> Dict[str, object]:
+    cached = stock_industry_map_cache.read()
+    if cached is not None:
+        return cached
+
+    try:
+        stock_info = fetch_finmind_stock_info(token=token, timeout=timeout)
+        industry_map = build_stock_industry_map(stock_info)
+        stock_industry_map_cache.store(
+            source="FinMind TaiwanStockInfo",
+            stock_info=stock_info,
+            industry_map=industry_map,
+        )
+        return {
+            "source": "FinMind TaiwanStockInfo",
+            "cache_hit": False,
+            "is_fresh": True,
+            "age_seconds": 0,
+            "raw_rows": int(len(stock_info)),
+            "map": industry_map,
+        }
+    except Exception as exc:  # pragma: no cover - upstream and network failures are surfaced in source metadata.
+        stale = stock_industry_map_cache.read(allow_stale=True)
+        if stale is not None:
+            stale["source"] = "Cached {}".format(stale.get("source") or "stock industry map")
+            stale["fetch_error"] = str(exc)
+            return stale
+        return {
+            "source": "unavailable",
+            "cache_hit": False,
+            "is_fresh": False,
+            "age_seconds": None,
+            "raw_rows": 0,
+            "map": {},
+            "fetch_error": str(exc),
+        }
 
 
 def fugle_connection_status(
@@ -637,6 +777,13 @@ def build_daily_pool_snapshot(
     active_rows = pool_to_records(active_pool)
     new_entry_rows = new_entry_to_records(new_entry_pool)
     watchlist_rows = watchlist_to_records(latest_quotes)
+    industry_payload = load_stock_industry_map(token=token, timeout=timeout)
+    industry_map = industry_payload.get("map") if isinstance(industry_payload.get("map"), dict) else {}
+    watchlist_rows = enrich_watchlist_records_with_industry(watchlist_rows, industry_map)
+    industry_group_counts = _industry_group_counts(watchlist_rows)
+    industry_fetch_error = _string_value(industry_payload.get("fetch_error")).strip()
+    if len(industry_fetch_error) > 180:
+        industry_fetch_error = "{}...".format(industry_fetch_error[:177])
 
     first_row = rows[0] if rows else {}
     first_active_row = active_rows[0] if active_rows else {}
@@ -715,6 +862,12 @@ def build_daily_pool_snapshot(
             "fugle_connection_text": fugle_status["text"],
             "new_entry_rows": int(len(new_entry_rows)),
             "futures_quote_rows": int(len(latest_quotes)),
+            "industry_map_source": industry_payload.get("source", ""),
+            "industry_map_cache_hit": bool(industry_payload.get("cache_hit")),
+            "industry_map_is_fresh": bool(industry_payload.get("is_fresh")),
+            "industry_map_age_seconds": industry_payload.get("age_seconds"),
+            "industry_map_rows": int(industry_payload.get("raw_rows") or 0),
+            "industry_group_counts": industry_group_counts,
             "futures_volume_source": futures_volume_source,
             "cache_schema_version": DASHBOARD_CACHE_SCHEMA_VERSION,
             "contract_rows": int(len(contracts)),
@@ -725,6 +878,7 @@ def build_daily_pool_snapshot(
             "contract_metadata_age_seconds": cached_contract_metadata_age_seconds,
             "near_month_end_date": _first_text(near_month_tickers.get("endDate", [])) if not near_month_tickers.empty else "",
             "next_month_end_date": _first_text(fugle_tickers.loc[fugle_tickers.get("month_bucket", "") == "next", "endDate"]) if "month_bucket" in fugle_tickers.columns else "",
+            **({"industry_map_fetch_error": industry_fetch_error} if industry_fetch_error else {}),
             **final_metrics,
         },
     )
@@ -3044,10 +3198,18 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       display: flex;
       align-items: center;
       justify-content: center;
+      gap: 6px;
       padding: 7px 10px;
       font-size: 14px;
       font-weight: 800;
       line-height: 1.2;
+    }}
+    .butterfly-title span {{
+      color: inherit;
+      opacity: 0.72;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
     }}
     .butterfly-title.up {{
       color: #dc2626;
@@ -3056,6 +3218,67 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
     .butterfly-title.down {{
       color: #1d4ed8;
       background: rgba(29, 78, 216, 0.08);
+    }}
+    .butterfly-filters {{
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }}
+    .butterfly-segment {{
+      display: inline-flex;
+      align-items: center;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }}
+    .butterfly-filter-button {{
+      min-height: 30px;
+      padding: 0 10px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+    }}
+    .butterfly-filter-button:last-child {{
+      border-right: 0;
+    }}
+    .butterfly-filter-button.is-active {{
+      background: var(--ink);
+      color: var(--panel);
+    }}
+    .butterfly-volume-filter {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      background: var(--panel);
+      white-space: nowrap;
+    }}
+    .butterfly-volume-filter input {{
+      width: 76px;
+      min-height: 24px;
+      padding: 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--ink);
+      font: inherit;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }}
     .butterfly-center {{
       background: var(--ink);
@@ -3067,11 +3290,12 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       min-height: 0;
     }}
     .butterfly-wing {{
-      display: grid;
-      grid-template-rows: repeat(15, minmax(0, 1fr));
-      align-content: stretch;
+      display: flex;
+      flex-direction: column;
       gap: 2px;
       min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
       padding: 6px 8px;
       background:
         repeating-linear-gradient(90deg, transparent 0 24%, rgba(100, 114, 118, 0.1) 24.2% 24.6%, transparent 24.8% 49%),
@@ -3081,7 +3305,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       display: grid;
       align-items: center;
       min-width: 0;
-      min-height: 0;
+      min-height: 23px;
     }}
     .butterfly-row.up {{
       grid-template-columns: 68px minmax(0, 1fr);
@@ -3843,12 +4067,26 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       <aside class="intraday-side-panel" aria-label="強弱勢排序">
         <section class="section-head">
           <h2>強弱勢排序</h2>
+          <div class="butterfly-filters" aria-label="強弱勢篩選">
+            <div class="butterfly-segment" role="group" aria-label="產業篩選">
+              <button class="butterfly-filter-button is-active" type="button" data-butterfly-industry="all" aria-pressed="true">全部</button>
+              <button class="butterfly-filter-button" type="button" data-butterfly-industry="electronics" aria-pressed="false">電子股</button>
+              <button class="butterfly-filter-button" type="button" data-butterfly-industry="non-electronics" aria-pressed="false">非電子</button>
+            </div>
+            <div class="butterfly-segment" role="group" aria-label="成交量範圍">
+              <button class="butterfly-filter-button is-active" type="button" data-butterfly-limit="all" aria-pressed="true">全部</button>
+              <button class="butterfly-filter-button" type="button" data-butterfly-limit="top50" aria-pressed="false">Top50</button>
+            </div>
+            <label class="butterfly-volume-filter" for="butterfly-min-volume">成交 ≥
+              <input id="butterfly-min-volume" type="number" min="0" step="50" value="0" inputmode="numeric">
+            </label>
+          </div>
         </section>
         <section class="butterfly-card" aria-label="強弱勢排序">
           <div class="butterfly-head">
-            <div class="butterfly-title up">強勢股</div>
+            <div class="butterfly-title up">強勢股 <span id="butterfly-up-count">0 檔</span></div>
             <div class="butterfly-center"></div>
-            <div class="butterfly-title down">弱勢股</div>
+            <div class="butterfly-title down">弱勢股 <span id="butterfly-down-count">0 檔</span></div>
           </div>
           <div class="butterfly-body">
             <div class="butterfly-wing up" id="butterfly-up-wing"></div>
@@ -4483,8 +4721,101 @@ class ContractMetadataCache:
         return parsed.astimezone(TAIPEI_TZ)
 
 
+class StockIndustryMapCache:
+    def __init__(self, cache_dir: Optional[str] = None) -> None:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.cache_dir = cache_dir or os.path.join(project_root, "data", "cache", "stock_industry_map")
+        self.lock = Lock()
+
+    def read(self, allow_stale: bool = False, now: Optional[datetime] = None) -> Optional[Dict[str, object]]:
+        path = self._cache_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as cache_file:
+                payload = json.load(cache_file)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if int(payload.get("version") or 0) != STOCK_INDUSTRY_MAP_CACHE_SCHEMA_VERSION:
+            return None
+
+        loaded_at = self._parse_cached_at(payload.get("cached_at"))
+        if loaded_at is None:
+            return None
+        current = now or taipei_now()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=TAIPEI_TZ)
+        current = current.astimezone(TAIPEI_TZ)
+        age_seconds = max(0, int((current - loaded_at).total_seconds()))
+        ttl = _env_int("STOCK_INDUSTRY_MAP_CACHE_SECONDS", DEFAULT_STOCK_INDUSTRY_MAP_CACHE_SECONDS)
+        is_fresh = age_seconds < ttl
+        if not allow_stale and not is_fresh:
+            return None
+
+        industry_map = payload.get("industry_map")
+        if not isinstance(industry_map, dict):
+            return None
+        return {
+            "source": str(payload.get("source") or "stock industry map cache"),
+            "cached_at": payload.get("cached_at"),
+            "age_seconds": age_seconds,
+            "is_fresh": is_fresh,
+            "cache_hit": True,
+            "raw_rows": int(payload.get("raw_rows") or 0),
+            "map": industry_map,
+        }
+
+    def store(
+        self,
+        source: str,
+        stock_info: pd.DataFrame,
+        industry_map: Dict[str, Dict[str, str]],
+        now: Optional[datetime] = None,
+    ) -> None:
+        if not industry_map:
+            return
+        current = now or taipei_now()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=TAIPEI_TZ)
+        current = current.astimezone(TAIPEI_TZ)
+        payload = {
+            "version": STOCK_INDUSTRY_MAP_CACHE_SCHEMA_VERSION,
+            "source": source,
+            "cached_at": current.isoformat(),
+            "raw_rows": int(len(stock_info)) if stock_info is not None else 0,
+            "industry_map": industry_map,
+        }
+        with self.lock:
+            try:
+                os.makedirs(self.cache_dir, exist_ok=True)
+                path = self._cache_path()
+                temp_path = "{}.{}.tmp".format(path, os.getpid())
+                with open(temp_path, "w", encoding="utf-8") as cache_file:
+                    json.dump(payload, cache_file, ensure_ascii=False)
+                os.replace(temp_path, path)
+            except OSError:
+                return
+
+    def _cache_path(self) -> str:
+        return os.path.join(self.cache_dir, "stock_industry_map_latest.json")
+
+    def _parse_cached_at(self, value: object) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            parsed = pd.Timestamp(value).to_pydatetime()
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=TAIPEI_TZ)
+        return parsed.astimezone(TAIPEI_TZ)
+
+
 dashboard_cache = DashboardCache()
 contract_metadata_cache = ContractMetadataCache()
+stock_industry_map_cache = StockIndustryMapCache()
 
 
 def _minute_label(minutes: int) -> str:
@@ -5424,7 +5755,6 @@ def _dashboard_script() -> str:
   const INTRADAY_TOP_N = 50;
   const INTRADAY_CHART_TOP_N = 24;
   const OUT_OF_TOP_RANK = INTRADAY_TOP_N + 1;
-  const BUTTERFLY_SIDE_LIMIT = 15;
   const INTRADAY_STORAGE_PREFIX = "stock-futures-intraday-history-v1";
   const completedClosingRefreshes = new Set();
   let asOfPinned = new URLSearchParams(window.location.search).has("as_of");
@@ -5504,6 +5834,7 @@ def _dashboard_script() -> str:
   };
   let currentWatchlistRows = [];
   let currentWatchlistTab = "all";
+  let butterflyFilterState = { industry: "all", limit: "all", minVolume: 0 };
 
   function applyTheme(theme) {
     const nextTheme = theme === "dark" ? "dark" : "light";
@@ -5837,38 +6168,72 @@ def _dashboard_script() -> str:
       .map((row, index) => ({ ...row, rank: index + 1 }));
   }
 
+  function butterflyIndustryGroup(row) {
+    const explicitGroup = String(row && row.industry_group || "").trim();
+    if (explicitGroup) return explicitGroup;
+    const category = String(row && row.industry_category || "").trim();
+    if (!category) return "未分類";
+    if (
+      category.includes("電子") ||
+      category.includes("半導體") ||
+      category.includes("光電") ||
+      category.includes("通信網路") ||
+      category.includes("資訊服務") ||
+      category.includes("電腦")
+    ) {
+      return "電子股";
+    }
+    return "非電子";
+  }
+
+  function butterflyIndustryMatches(row) {
+    const selected = butterflyFilterState.industry;
+    if (selected === "electronics") return butterflyIndustryGroup(row) === "電子股";
+    if (selected === "non-electronics") return butterflyIndustryGroup(row) === "非電子";
+    return true;
+  }
+
+  function butterflyVolumeMatches(row) {
+    const minVolume = Number(butterflyFilterState.minVolume) || 0;
+    return minVolume <= 0 || row.volume >= minVolume;
+  }
+
   function butterflySourceRows(rows) {
-    return (rows || [])
+    const source = (rows || [])
       .map((row) => {
         const volume = numberOrNull(row.volume);
         const spreadPer = numberOrNull(row.spread_per);
         const stockId = String(row.stock_id || "").trim();
         if (!stockId || volume === null || spreadPer === null) return null;
-        return {
+        const normalized = {
           ...row,
           stock_id: stockId,
           stock_name: String(row.stock_name || stockId),
+          industry_category: String(row.industry_category || ""),
+          industry_group: butterflyIndustryGroup(row),
           volume,
           spread_per: spreadPer
         };
+        if (!butterflyIndustryMatches(normalized) || !butterflyVolumeMatches(normalized)) return null;
+        return normalized;
       })
       .filter(Boolean)
-      .sort((a, b) => b.volume - a.volume || a.stock_id.localeCompare(b.stock_id))
-      .slice(0, INTRADAY_TOP_N);
+      .sort((a, b) => b.volume - a.volume || a.stock_id.localeCompare(b.stock_id));
+    if (butterflyFilterState.limit === "top50") {
+      return source.slice(0, INTRADAY_TOP_N);
+    }
+    return source;
   }
 
-  function butterflyWingRows(rows, direction) {
-    const source = butterflySourceRows(rows);
+  function butterflyWingRows(source, direction) {
     if (direction === "up") {
       return source
         .filter((row) => row.spread_per > 0)
-        .sort((a, b) => b.spread_per - a.spread_per || b.volume - a.volume)
-        .slice(0, BUTTERFLY_SIDE_LIMIT);
+        .sort((a, b) => b.spread_per - a.spread_per || b.volume - a.volume);
     }
     return source
       .filter((row) => row.spread_per < 0)
-      .sort((a, b) => a.spread_per - b.spread_per || b.volume - a.volume)
-      .slice(0, BUTTERFLY_SIDE_LIMIT);
+      .sort((a, b) => a.spread_per - b.spread_per || b.volume - a.volume);
   }
 
   function renderButterflyWing(rows, direction, maxVolume) {
@@ -5888,11 +6253,13 @@ def _dashboard_script() -> str:
     const downWing = document.getElementById("butterfly-down-wing");
     if (!upWing || !downWing) return;
     const source = butterflySourceRows(rows);
-    const upRows = butterflyWingRows(rows, "up");
-    const downRows = butterflyWingRows(rows, "down");
+    const upRows = butterflyWingRows(source, "up");
+    const downRows = butterflyWingRows(source, "down");
     const maxVolume = Math.max(...source.map((row) => row.volume), 1);
     upWing.innerHTML = renderButterflyWing(upRows, "up", maxVolume);
     downWing.innerHTML = renderButterflyWing(downRows, "down", maxVolume);
+    setText("butterfly-up-count", `${upRows.length} 檔`);
+    setText("butterfly-down-count", `${downRows.length} 檔`);
   }
 
   function recordIntradaySnapshot(payload) {
@@ -6273,12 +6640,12 @@ def _dashboard_script() -> str:
   function trajectoryDomainFor(history, ids) {
     const domainKey = history && history.as_of_date ? String(history.as_of_date) : "";
     if (!intradayChartState.domain || intradayChartState.domainKey !== domainKey) {
-      intradayChartState.domain = { xMax: 10, yMax: 120 };
+      intradayChartState.domain = { xMax: 120, yMax: 10 };
       intradayChartState.domainKey = domainKey;
     }
     const idSet = new Set(ids || []);
-    let priceMax = intradayChartState.domain.xMax;
-    let volumeMax = intradayChartState.domain.yMax;
+    let volumeMax = intradayChartState.domain.xMax;
+    let priceMax = intradayChartState.domain.yMax;
     (history.snapshots || []).forEach((snapshot, index) => {
       (snapshot.rows || []).forEach((row) => {
         if (!idSet.has(row.stock_id)) return;
@@ -6291,8 +6658,8 @@ def _dashboard_script() -> str:
       });
     });
     intradayChartState.domain = {
-      xMax: Math.max(4, Math.ceil(priceMax)),
-      yMax: Math.max(20, Math.ceil(volumeMax / 10) * 10)
+      xMax: Math.max(20, Math.ceil(volumeMax / 10) * 10),
+      yMax: Math.max(4, Math.ceil(priceMax))
     };
     return intradayChartState.domain;
   }
@@ -6331,8 +6698,8 @@ def _dashboard_script() -> str:
   }
 
   function trajectoryPoint(row, scale) {
-    const cx = clamp(scale.x(row.spread_per), scale.xMin + 10, scale.xRight - 10);
-    const cy = clamp(scale.y(row.volumeRate), scale.yTop + 12, scale.yBottom - 12);
+    const cx = clamp(scale.x(row.volumeRate), scale.xMin + 10, scale.xRight - 10);
+    const cy = clamp(scale.y(row.spread_per), scale.yTop + 12, scale.yBottom - 12);
     const radius = 8 + Math.min(18, Math.abs(row.deltaOpen) * 0.45);
     return {
       ...row,
@@ -6382,22 +6749,22 @@ def _dashboard_script() -> str:
     const chart = document.getElementById("intraday-trajectory-chart");
     if (!chart) return;
     chart.innerHTML = `
-      <rect class="quad-bg down-up" x="${scale.xMin}" y="${scale.yTop}" width="${scale.zeroX - scale.xMin}" height="${scale.zeroY - scale.yTop}"></rect>
+      <rect class="quad-bg up-down" x="${scale.xMin}" y="${scale.yTop}" width="${scale.zeroX - scale.xMin}" height="${scale.zeroY - scale.yTop}"></rect>
       <rect class="quad-bg up-up" x="${scale.zeroX}" y="${scale.yTop}" width="${scale.xRight - scale.zeroX}" height="${scale.zeroY - scale.yTop}"></rect>
       <rect class="quad-bg down-down" x="${scale.xMin}" y="${scale.zeroY}" width="${scale.zeroX - scale.xMin}" height="${scale.yBottom - scale.zeroY}"></rect>
-      <rect class="quad-bg up-down" x="${scale.zeroX}" y="${scale.zeroY}" width="${scale.xRight - scale.zeroX}" height="${scale.yBottom - scale.zeroY}"></rect>
+      <rect class="quad-bg down-up" x="${scale.zeroX}" y="${scale.zeroY}" width="${scale.xRight - scale.zeroX}" height="${scale.yBottom - scale.zeroY}"></rect>
       <line class="axis-line" x1="${scale.xMin}" y1="${scale.zeroY}" x2="${scale.xRight}" y2="${scale.zeroY}"></line>
       <line class="axis-line" x1="${scale.zeroX}" y1="${scale.yTop}" x2="${scale.zeroX}" y2="${scale.yBottom}"></line>
-      <text class="quad-label" x="${scale.xMin + 12}" y="${scale.yTop + 22}">價跌量漲</text>
+      <text class="quad-label" x="${scale.xMin + 12}" y="${scale.yTop + 22}">價漲量縮</text>
       <text class="quad-label" x="${scale.zeroX + 12}" y="${scale.yTop + 22}">價漲量漲</text>
       <text class="quad-label" x="${scale.xMin + 12}" y="${scale.yBottom - 14}">價跌量縮</text>
-      <text class="quad-label" x="${scale.zeroX + 12}" y="${scale.yBottom - 14}">價漲量縮</text>
+      <text class="quad-label" x="${scale.zeroX + 12}" y="${scale.yBottom - 14}">價跌量漲</text>
       <text class="axis-label" x="${scale.xMin}" y="${scale.height - 22}">-${scale.xMax}%</text>
       <text class="axis-label" x="${scale.zeroX - 10}" y="${scale.height - 22}">0</text>
       <text class="axis-label" x="${scale.xRight - 32}" y="${scale.height - 22}">+${scale.xMax}%</text>
-      <text class="axis-label" x="${scale.width / 2 - 34}" y="${scale.height - 10}">價格基準</text>
+      <text class="axis-label" x="${scale.width / 2 - 38}" y="${scale.height - 10}">量能偏離 %</text>
       <text class="axis-label" x="12" y="${scale.yTop + 10}">+${scale.yMax}%</text>
-      <text class="axis-label" x="12" y="${scale.zeroY + 4}">量能偏離 %</text>
+      <text class="axis-label" x="12" y="${scale.zeroY + 4}">價格基準</text>
       <text class="axis-label" x="12" y="${scale.yBottom}">-${scale.yMax}%</text>
       <g id="intraday-trail-layer"></g>
       <g id="intraday-bubble-layer"></g>`;
@@ -6864,6 +7231,70 @@ def _dashboard_script() -> str:
     updateWatchlistTabs("all");
   }
 
+  function normalizeButterflyIndustry(value) {
+    return ["all", "electronics", "non-electronics"].includes(value) ? value : "all";
+  }
+
+  function normalizeButterflyLimit(value) {
+    return value === "top50" ? "top50" : "all";
+  }
+
+  function setButterflyIndustryFilter(value) {
+    butterflyFilterState.industry = normalizeButterflyIndustry(value);
+    document.querySelectorAll("[data-butterfly-industry]").forEach((button) => {
+      const active = button.dataset.butterflyIndustry === butterflyFilterState.industry;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function setButterflyLimitFilter(value) {
+    butterflyFilterState.limit = normalizeButterflyLimit(value);
+    document.querySelectorAll("[data-butterfly-limit]").forEach((button) => {
+      const active = button.dataset.butterflyLimit === butterflyFilterState.limit;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function setButterflyMinVolumeFilter(value) {
+    const input = document.getElementById("butterfly-min-volume");
+    const parsed = Number(String(value || "").replace(/,/g, ""));
+    const nextValue = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    butterflyFilterState.minVolume = nextValue;
+    if (input && String(input.value) !== String(nextValue)) input.value = String(nextValue);
+  }
+
+  function initButterflyFilters() {
+    document.querySelectorAll("[data-butterfly-industry]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setButterflyIndustryFilter(button.dataset.butterflyIndustry);
+        renderButterflyChart(currentWatchlistRows);
+      });
+    });
+    document.querySelectorAll("[data-butterfly-limit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setButterflyLimitFilter(button.dataset.butterflyLimit);
+        renderButterflyChart(currentWatchlistRows);
+      });
+    });
+    const input = document.getElementById("butterfly-min-volume");
+    if (input) {
+      input.addEventListener("change", () => {
+        setButterflyMinVolumeFilter(input.value);
+        renderButterflyChart(currentWatchlistRows);
+      });
+      input.addEventListener("input", () => {
+        const parsed = Number(String(input.value || "").replace(/,/g, ""));
+        butterflyFilterState.minVolume = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+        renderButterflyChart(currentWatchlistRows);
+      });
+      setButterflyMinVolumeFilter(input.value);
+    }
+    setButterflyIndustryFilter(butterflyFilterState.industry);
+    setButterflyLimitFilter(butterflyFilterState.limit);
+  }
+
   function renderPoolRows(rows, tableName) {
     if (!rows.length) {
       return emptyRender('<tr><td class="empty-row" colspan="9">今日沒有符合條件的標的</td></tr>');
@@ -7122,6 +7553,7 @@ def _dashboard_script() -> str:
   initAsOfFilter();
   initPoolTabs();
   initWatchlistTabs();
+  initButterflyFilters();
   loadCachedIntradayTrajectory().finally(() => loadPool());
   startRealtimeRanking();
 }());

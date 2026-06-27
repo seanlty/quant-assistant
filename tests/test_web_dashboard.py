@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import pandas as pd
+import pytest
 
 from src.stock_pool import StockPoolCriteria
 from src.web_dashboard import (
@@ -13,9 +14,11 @@ from src.web_dashboard import (
     DashboardCache,
     ContractMetadataCache,
     IntradayTrajectoryCache,
+    StockIndustryMapCache,
     TAIPEI_TZ,
     add_fugle_contract_months,
     application,
+    build_stock_industry_map,
     build_near_month_tickers_from_watchlist_symbols,
     build_intraday_trajectory_history_from_candles,
     build_fugle_quote_volume_history,
@@ -33,9 +36,11 @@ from src.web_dashboard import (
     candidate_stock_ids_from_futures_volume,
     criteria_from_query,
     enrich_latest_quotes_with_daily_prices,
+    enrich_watchlist_records_with_industry,
     final_readiness_from_daily_history,
     format_taipei_datetime,
     fugle_connection_status,
+    industry_group_from_category,
     is_taipei_post_close_quote_window,
     latest_closing_refresh_at,
     merge_realtime_volume_history,
@@ -59,6 +64,21 @@ def _call_wsgi(path="/", query_string=""):
 
     body = b"".join(application({"PATH_INFO": path, "QUERY_STRING": query_string}, start_response))
     return captured, body
+
+
+@pytest.fixture(autouse=True)
+def _stub_stock_industry_map_loader(monkeypatch):
+    monkeypatch.setattr(
+        "src.web_dashboard.load_stock_industry_map",
+        lambda token=None, timeout=60: {
+            "source": "test stock industry map",
+            "cache_hit": False,
+            "is_fresh": True,
+            "age_seconds": 0,
+            "raw_rows": 0,
+            "map": {},
+        },
+    )
 
 
 def _minimal_snapshot(min_atr_percent=3.0):
@@ -86,7 +106,7 @@ def _minimal_snapshot(min_atr_percent=3.0):
         source={
             "price_rows": 0,
             "contract_rows": 0,
-            "cache_schema_version": 4,
+            "cache_schema_version": 5,
             "cache_kind": "final",
             "snapshot_stage": "final",
             "final_ready": True,
@@ -813,6 +833,89 @@ def test_contract_metadata_cache_round_trips_fugle_products():
         shutil.rmtree(cache_dir, ignore_errors=True)
 
 
+def test_stock_industry_map_groups_and_enriches_watchlist():
+    stock_info = pd.DataFrame(
+        [
+            {
+                "date": "2026-06-15",
+                "stock_id": "2330",
+                "stock_name": "台積電",
+                "industry_category": "半導體業",
+                "type": "twse",
+            },
+            {
+                "date": "2026-06-15",
+                "stock_id": "1301",
+                "stock_name": "台塑",
+                "industry_category": "塑膠工業",
+                "type": "twse",
+            },
+            {
+                "date": "2026-06-15",
+                "stock_id": "9999",
+                "stock_name": "未分類",
+                "industry_category": "",
+                "type": "twse",
+            },
+        ]
+    )
+
+    industry_map = build_stock_industry_map(stock_info)
+    enriched = enrich_watchlist_records_with_industry(
+        [
+            {"stock_id": "2330", "stock_name": "台積電"},
+            {"stock_id": "1301", "stock_name": "台塑"},
+            {"stock_id": "9999", "stock_name": "未分類"},
+            {"stock_id": "0000", "stock_name": "Missing"},
+        ],
+        industry_map,
+    )
+
+    assert industry_map["2330"]["industry_group"] == "電子股"
+    assert industry_map["1301"]["industry_group"] == "非電子"
+    assert industry_group_from_category("光電業") == "電子股"
+    assert enriched[0]["industry_category"] == "半導體業"
+    assert enriched[1]["industry_group"] == "非電子"
+    assert enriched[2]["industry_group"] == "未分類"
+    assert enriched[3]["industry_group"] == "未分類"
+
+
+def test_stock_industry_map_cache_round_trips():
+    cache_dir = os.path.join(os.getcwd(), "data", "test-stock-industry-map-{}".format(uuid.uuid4().hex))
+    try:
+        industry_cache = StockIndustryMapCache(cache_dir=cache_dir)
+        stock_info = pd.DataFrame(
+            [
+                {
+                    "date": "2026-06-15",
+                    "stock_id": "2330",
+                    "stock_name": "台積電",
+                    "industry_category": "半導體業",
+                    "type": "twse",
+                }
+            ]
+        )
+        industry_map = build_stock_industry_map(stock_info)
+
+        industry_cache.store(
+            source="FinMind TaiwanStockInfo",
+            stock_info=stock_info,
+            industry_map=industry_map,
+            now=datetime(2026, 6, 16, 9, 0, tzinfo=TAIPEI_TZ),
+        )
+        cached = industry_cache.read(now=datetime(2026, 6, 16, 10, 0, tzinfo=TAIPEI_TZ))
+
+        assert cached is not None
+        assert cached["source"] == "FinMind TaiwanStockInfo"
+        assert cached["cache_hit"] is True
+        assert cached["is_fresh"] is True
+        assert cached["raw_rows"] == 1
+        assert cached["map"]["2330"]["industry_category"] == "半導體業"
+        assert cached["map"]["2330"]["industry_group"] == "電子股"
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
 def test_live_snapshot_uses_cached_contract_metadata_before_taifex(monkeypatch):
     cache_dir = os.path.join(os.getcwd(), "data", "test-contract-metadata-{}".format(uuid.uuid4().hex))
     try:
@@ -987,7 +1090,16 @@ def test_dashboard_cache_migrates_pool_snapshot_missing_spread(monkeypatch):
             }
         ],
         new_entry_rows=[],
-        watchlist_rows=[{"stock_id": "2330", "finmind_futures_id": "QFF", "futures_id": "QF", "spread": 12.5}],
+        watchlist_rows=[
+            {
+                "stock_id": "2330",
+                "finmind_futures_id": "QFF",
+                "futures_id": "QF",
+                "spread": 12.5,
+                "industry_category": "半導體業",
+                "industry_group": "電子股",
+            }
+        ],
         source={},
     )
     cache.snapshots[key] = old_snapshot
@@ -1008,7 +1120,7 @@ def test_dashboard_cache_migrates_pool_snapshot_missing_spread(monkeypatch):
     assert snapshot.active_rows[0]["spread"] == 1.0
     assert snapshot.rows[0]["volume_rank_5d"] == [9, 8, 7, 6, 5]
     assert snapshot.active_rows[0]["volume_rank_5d"] == [30, 25, 22, 18, 12]
-    assert snapshot.source["cache_schema_version"] == 4
+    assert snapshot.source["cache_schema_version"] == 5
     assert snapshot.source["cache_kind"] == "intraday"
 
 
@@ -2299,6 +2411,10 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "renderTodayOverviewChart(payload.watchlist_rows || [])" in html
     assert "renderButterflyChart" in html
     assert "renderButterflyChart(payload.watchlist_rows || [])" in html
+    assert "const cx = clamp(scale.x(row.volumeRate)" in html
+    assert "const cy = clamp(scale.y(row.spread_per)" in html
+    assert "量能偏離 %" in html
+    assert "價格基準" in html
     assert "initWatchlistTabs" in html
     assert "switchWatchlistTab" in html
     assert "filterWatchlistRows" in html
@@ -2306,7 +2422,10 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "data-watchlist-tab" in html
     assert 'regular: "只顯示大型股票期貨標的"' in html
     assert 'small: "只顯示小型股票期貨標的"' in html
-    assert "BUTTERFLY_SIDE_LIMIT = 15" in html
+    assert 'data-butterfly-limit="top50"' in html
+    assert 'butterflyFilterState = { industry: "all", limit: "all", minVolume: 0 }' in html
+    assert 'source.slice(0, INTRADAY_TOP_N)' in html
+    assert "BUTTERFLY_SIDE_LIMIT" not in html
     assert "butterflyWingRows" in html
     assert "強勢股" in html
     assert "弱勢股" in html

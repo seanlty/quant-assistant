@@ -93,6 +93,18 @@ def fetch_finmind_futopt_daily_info(token: Optional[str] = None, timeout: int = 
     return pd.DataFrame(payload.get("data", []))
 
 
+def fetch_finmind_stock_info(token: Optional[str] = None, timeout: int = 30) -> pd.DataFrame:
+    """Fetch FinMind listed stock metadata, including industry category."""
+    params = {"dataset": "TaiwanStockInfo"}
+    headers = {"Authorization": "Bearer {}".format(token)} if token else {}
+    response = requests.get(FINMIND_DATA_URL, params=params, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status") != 200:
+        raise RuntimeError("FinMind stock info error: {}".format(payload.get("msg", payload)))
+    return pd.DataFrame(payload.get("data", []))
+
+
 def fetch_finmind_futures_snapshot(
     data_id: str,
     token: Optional[str] = None,
