@@ -837,7 +837,7 @@ def test_stock_industry_map_groups_and_enriches_watchlist():
     stock_info = pd.DataFrame(
         [
             {
-                "date": "2026-06-15",
+                "date": "None",
                 "stock_id": "2330",
                 "stock_name": "台積電",
                 "industry_category": "半導體業",
@@ -872,6 +872,7 @@ def test_stock_industry_map_groups_and_enriches_watchlist():
     )
 
     assert industry_map["2330"]["industry_group"] == "電子股"
+    assert industry_map["2330"]["date"] == ""
     assert industry_map["1301"]["industry_group"] == "非電子"
     assert industry_group_from_category("光電業") == "電子股"
     assert enriched[0]["industry_category"] == "半導體業"
@@ -1163,6 +1164,51 @@ def test_dashboard_cache_rebuilds_snapshot_missing_rank_sequence(monkeypatch):
     snapshot = cache.get_snapshot(criteria=criteria, as_of_date=date(2026, 6, 16))
 
     assert snapshot.rows[0]["volume_rank_5d"] == [18, 12, 8, 5, 2]
+    assert snapshot.source["cache_kind"] == "intraday"
+
+
+def test_dashboard_cache_rebuilds_snapshot_with_unavailable_industry_map(monkeypatch):
+    criteria = StockPoolCriteria(min_atr_percent=4.0)
+    cache = DashboardCache(cache_dir="unused-cache-dir")
+    key = cache._criteria_key(criteria, date(2026, 6, 16), "intraday")
+    old_snapshot = _minimal_snapshot(criteria.min_atr_percent)
+    old_snapshot.watchlist_rows.append(
+        {
+            "stock_id": "2330",
+            "stock_name": "台積電",
+            "volume": 1000,
+            "spread_per": 1.0,
+            "industry_category": "",
+            "industry_group": "未分類",
+        }
+    )
+    old_snapshot.source["industry_map_source"] = "unavailable"
+    old_snapshot.source["industry_map_rows"] = 0
+    cache.snapshots[key] = old_snapshot
+    cache.loaded_at[key] = datetime(2026, 6, 16, 10, 0, 0, tzinfo=TAIPEI_TZ)
+
+    fresh_snapshot = _minimal_snapshot(criteria.min_atr_percent)
+    fresh_snapshot.watchlist_rows.append(
+        {
+            "stock_id": "2330",
+            "stock_name": "台積電",
+            "volume": 1000,
+            "spread_per": 1.0,
+            "industry_category": "半導體業",
+            "industry_group": "電子股",
+        }
+    )
+
+    monkeypatch.delenv("DASHBOARD_CACHE_SECONDS", raising=False)
+    monkeypatch.setattr("src.web_dashboard.taipei_now", lambda: datetime(2026, 6, 16, 10, 0, 30, tzinfo=TAIPEI_TZ))
+    monkeypatch.setattr(cache, "_read_disk_snapshot", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(cache, "_write_disk_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr("src.web_dashboard.build_daily_pool_snapshot", lambda **kwargs: fresh_snapshot)
+
+    snapshot = cache.get_snapshot(criteria=criteria, as_of_date=date(2026, 6, 16))
+
+    assert snapshot.watchlist_rows[0]["industry_category"] == "半導體業"
+    assert snapshot.watchlist_rows[0]["industry_group"] == "電子股"
     assert snapshot.source["cache_kind"] == "intraday"
 
 

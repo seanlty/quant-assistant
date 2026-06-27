@@ -321,6 +321,8 @@ def is_snapshot_cache_compatible(snapshot: DashboardSnapshot) -> bool:
             return False
     if any("industry_category" not in row or "industry_group" not in row for row in snapshot.watchlist_rows):
         return False
+    if snapshot.watchlist_rows and snapshot.source.get("industry_map_source") == "unavailable":
+        return False
     if snapshot.source.get("cache_schema_version") != DASHBOARD_CACHE_SCHEMA_VERSION:
         return False
     if snapshot.source.get("rank_sequence_fallback"):
@@ -506,6 +508,16 @@ def industry_group_from_category(category: object) -> str:
     return "非電子"
 
 
+def _safe_industry_date_text(value: object) -> str:
+    text = _string_value(value).strip()
+    if not text or text.lower() in {"none", "nan", "nat", "null"}:
+        return ""
+    try:
+        return _date_value(value)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
 def build_stock_industry_map(stock_info: pd.DataFrame) -> Dict[str, Dict[str, str]]:
     if stock_info is None or stock_info.empty:
         return {}
@@ -521,7 +533,7 @@ def build_stock_industry_map(stock_info: pd.DataFrame) -> Dict[str, Dict[str, st
     df["_stock_name"] = df[name_column].map(lambda value: _string_value(value).strip()) if name_column else ""
     df["_industry_category"] = df[industry_column].map(lambda value: _string_value(value).strip()) if industry_column else ""
     df["_type"] = df["type"].map(lambda value: _string_value(value).strip()) if "type" in df.columns else ""
-    df["_date_text"] = df["date"].map(lambda value: _date_value(value)) if "date" in df.columns else ""
+    df["_date_text"] = df["date"].map(_safe_industry_date_text) if "date" in df.columns else ""
     df["_has_industry"] = df["_industry_category"].astype(str).str.len() > 0
     df = df[df["_stock_id"].astype(str).str.len() > 0].copy()
     if df.empty:
