@@ -44,7 +44,11 @@ jobs:
         run: |
           set -euo pipefail
           mode="intraday_snapshot"
+          rebuild_after_refresh="false"
           case "${EVENT_SCHEDULE}" in
+            "3,18,33,45 9-13 * * 1-5")
+              rebuild_after_refresh="true"
+              ;;
             "5,20,35 14 * * 1-5")
               mode="final_snapshot"
               ;;
@@ -58,6 +62,7 @@ jobs:
           min_atr="${INPUT_MIN_ATR_PERCENT:-3}"
           echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
           echo "min_atr_percent=${min_atr}" >> "${GITHUB_OUTPUT}"
+          echo "rebuild_after_refresh=${rebuild_after_refresh}" >> "${GITHUB_OUTPUT}"
 
       - name: Call protected dashboard refresh endpoint
         shell: bash
@@ -71,25 +76,33 @@ jobs:
           base_url="${base_url%/}"
           mode="${{ steps.decide.outputs.mode }}"
           min_atr="${{ steps.decide.outputs.min_atr_percent }}"
-          url="${base_url}/api/admin/refresh?mode=${mode}&min_atr_percent=${min_atr}"
-          echo "Calling ${base_url}/api/admin/refresh with mode=${mode}, min_atr_percent=${min_atr}"
-          curl \
-            --fail-with-body \
-            --show-error \
-            --silent \
-            --location \
-            --retry 2 \
-            --retry-delay 20 \
-            --max-time 600 \
-            --header "Authorization: Bearer ${DASHBOARD_REFRESH_TOKEN}" \
-            "${url}" \
-            --output response.json
-          cat response.json
-          python - <<'PY'
+          call_refresh() {
+            local call_mode="$1"
+            local output_file="$2"
+            local refresh_snapshot="${3:-}"
+            local url="${base_url}/api/admin/refresh?mode=${call_mode}&min_atr_percent=${min_atr}"
+            if [ "${refresh_snapshot}" = "1" ]; then
+              url="${url}&refresh_snapshot=1"
+            fi
+            echo "Calling ${base_url}/api/admin/refresh with mode=${call_mode}, min_atr_percent=${min_atr}, refresh_snapshot=${refresh_snapshot:-0}"
+            curl \
+              --fail-with-body \
+              --show-error \
+              --silent \
+              --location \
+              --retry 2 \
+              --retry-delay 20 \
+              --max-time 600 \
+              --header "Authorization: Bearer ${DASHBOARD_REFRESH_TOKEN}" \
+              "${url}" \
+              --output "${output_file}"
+            cat "${output_file}"
+            python - "${output_file}" <<'PY'
           import json
           import sys
 
-          with open("response.json", "r", encoding="utf-8") as response_file:
+          response_path = sys.argv[1]
+          with open(response_path, "r", encoding="utf-8") as response_file:
               payload = json.load(response_file)
           if payload.get("status") != "ok":
               print("Refresh endpoint returned non-ok payload:", payload)
@@ -99,3 +112,8 @@ jobs:
               sys.exit(1)
           print("Refresh OK:", payload.get("mode"), payload.get("as_of_date"), payload.get("trajectory_last_cutoff"))
           PY
+          }
+          call_refresh "${mode}" "response.json"
+          if [ "${{ steps.decide.outputs.rebuild_after_refresh }}" = "true" ]; then
+            call_refresh "rebuild_trajectory" "rebuild-response.json" "1"
+          fi

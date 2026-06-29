@@ -37,9 +37,9 @@ Workflow 已新增於：
 排程使用台北時間：
 
 - `08:48`：開盤後建立今日第一份 intraday 快取。
-- `09:03, 09:18, 09:33, 09:45 ... 13:45`：盤中每 15 分鐘附近刷新 snapshot / 軌跡。
+- `09:03, 09:18, 09:33, 09:45 ... 13:45`：盤中每 15 分鐘附近先刷新 snapshot，再多跑一次 `rebuild_trajectory&refresh_snapshot=1` 補漏。
 - `14:05, 14:20, 14:35`：盤後重打 final snapshot。
-- `14:50`：用 Fugle 5 分 K 重建整天 ranking trajectory，補掉任何漏跑截面。
+- `14:50`：用 Fugle 5 分 K 再重建整天 ranking trajectory，補掉任何漏跑截面。
 
 GitHub repository 需要設定：
 
