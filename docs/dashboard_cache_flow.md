@@ -58,7 +58,7 @@ flowchart TD
    - 大型活躍股期池：`contract_type == "regular"`，價格 0 到 200。
    - 新進榜：最新一日進入成交口數 Top N、前一交易日未在 Top N。
    - Watchlist：最新日每個標的的股期報價與成交口數。
-   - 昨高低突破欄位：用 `watchlist_rows` 當 universe，比對前一交易日同股票主力股期的 `max/min`，在 row 內補 `previous_high`、`previous_low`、`distance_to_previous_high_percent`、`distance_to_previous_low_percent`、`breakout_direction`、`breakout_label`。前端精選股池分成「突破昨高」與「跌破昨低」兩個 tab，各自套成交口數下限並顯示前 20 名。
+   - 昨高低突破欄位：用 `watchlist_rows` 當 universe，比對前一交易日同股票主力股期的 `max/min`，在 row 內補 `previous_high`、`previous_low`、`distance_to_previous_high_percent`、`distance_to_previous_low_percent`、`breakout_direction`、`breakout_label`，並用最近 3 個 true range 日補 `atr_3`、`atr_3_percent`、`atr_3_window`。前端精選股池分成「突破昨高」與「跌破昨低」兩個 tab，各自套成交口數下限，依 `atr_3_percent` 顯示前 30 名。
 9. 將結果包成 `DashboardSnapshot`，並在 `source` 寫入資料來源、Fugle 狀態、final readiness 與 cache schema。
 
 ## 篩選規則
@@ -122,7 +122,7 @@ legacy 檔名沒有 `{cache_kind}`，例如：
 data/cache/dashboard_asof2026-06-16_vol5_top50_atr20_price500-5000_minatr3.json
 ```
 
-讀到舊 snapshot 時會透過 `migrate_cached_snapshot()` 補上相容欄位，但目前 production schema 是 v6。v6 需要 `watchlist_rows` 內含昨高/昨低突破欄位；舊 schema 會被標記 `breakout_levels_fallback` 並視為不相容，下一次 `/api/pool` 或 `/api/admin/refresh` 會自動重建 dashboard snapshot cache。
+讀到舊 snapshot 時會透過 `migrate_cached_snapshot()` 補上相容欄位，但目前 production schema 是 v7。v7 需要 `watchlist_rows` 內含昨高/昨低突破欄位與 ATR3 欄位；舊 schema 會被標記 `breakout_levels_fallback` 並視為不相容，下一次 `/api/pool` 或 `/api/admin/refresh` 會自動重建 dashboard snapshot cache。
 
 ## TTL 與刷新規則
 
@@ -179,7 +179,7 @@ TTL 由環境變數控制：
 
 目前 `data/cache/` 內同時存在：
 
-- schema v6 以前的檔案會在讀取時被視為需要重建，避免昨高/昨低突破欄位缺失。
+- schema v7 以前的檔案會在讀取時被視為需要重建，避免昨高/昨低突破與 ATR3 欄位缺失。
 - legacy 無 cache kind 的舊檔仍可被 reader 找到，但若 schema 不符，會走重建流程。
 
 這和程式中的 legacy reader / migration 設計一致。

@@ -59,8 +59,9 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_CRITERIA = StockPoolCriteria()
 MIN_ATR_PERCENT_OPTIONS = tuple(value / 10 for value in range(20, 51, 5))
 TODAY_OVERVIEW_TOP_N = 50
-BREAKOUT_TAB_TOP_N = 20
-DASHBOARD_CACHE_SCHEMA_VERSION = 6
+BREAKOUT_TAB_TOP_N = 30
+BREAKOUT_ATR_DAYS = 3
+DASHBOARD_CACHE_SCHEMA_VERSION = 7
 WATCHLIST_BREAKOUT_FIELDS = (
     "previous_date",
     "previous_high",
@@ -70,6 +71,9 @@ WATCHLIST_BREAKOUT_FIELDS = (
     "distance_to_previous_low_percent",
     "breakout_direction",
     "breakout_label",
+    "atr_3",
+    "atr_3_percent",
+    "atr_3_window",
 )
 WATCHLIST_BREAKOUT_DEFAULTS = {
     "previous_date": "",
@@ -80,6 +84,9 @@ WATCHLIST_BREAKOUT_DEFAULTS = {
     "distance_to_previous_low_percent": None,
     "breakout_direction": "",
     "breakout_label": "資料不足",
+    "atr_3": None,
+    "atr_3_percent": None,
+    "atr_3_window": "",
 }
 CACHE_KIND_FINAL = "final"
 CACHE_KIND_INTRADAY = "intraday"
@@ -2697,6 +2704,7 @@ def enrich_watchlist_records_with_previous_levels(
 
     for row in enriched_rows:
         reference_date = _timestamp_or_none(row.get("date")) or default_reference_date
+        _apply_breakout_atr_fields(row, history, reference_date, BREAKOUT_ATR_DAYS)
         previous_date = _previous_trading_date(history_dates, reference_date)
         if previous_date is None:
             continue
@@ -2757,13 +2765,13 @@ def _watchlist_contract_types(row: Dict[str, object]) -> set:
     return contract_types
 
 
-def _select_previous_level_row(previous_rows: pd.DataFrame, row: Dict[str, object]) -> Optional[pd.Series]:
+def _watchlist_history_candidates(source_rows: pd.DataFrame, row: Dict[str, object]) -> pd.DataFrame:
     stock_id = _string_value(row.get("stock_id")).strip()
-    if not stock_id or previous_rows.empty:
-        return None
-    candidates = previous_rows[previous_rows["stock_id"].astype(str).str.strip() == stock_id].copy()
+    if not stock_id or source_rows.empty or "stock_id" not in source_rows.columns:
+        return pd.DataFrame()
+    candidates = source_rows[source_rows["stock_id"].astype(str).str.strip() == stock_id].copy()
     if candidates.empty:
-        return None
+        return candidates
 
     product_mask = pd.Series(False, index=candidates.index)
     for row_key, candidate_key in (("finmind_futures_id", "finmind_futures_id"), ("futures_id", "futures_id")):
@@ -2778,6 +2786,13 @@ def _select_previous_level_row(previous_rows: pd.DataFrame, row: Dict[str, objec
         type_mask = candidates["contract_type"].astype(str).str.strip().isin(contract_types)
         if type_mask.any():
             candidates = candidates[type_mask].copy()
+    return candidates
+
+
+def _select_previous_level_row(previous_rows: pd.DataFrame, row: Dict[str, object]) -> Optional[pd.Series]:
+    candidates = _watchlist_history_candidates(previous_rows, row)
+    if candidates.empty:
+        return None
 
     candidates["_volume_sort"] = pd.to_numeric(candidates.get("Trading_Volume"), errors="coerce").fillna(0)
     candidates["_contract_sort"] = candidates.get("contract_date", pd.Series("", index=candidates.index)).astype(str)
@@ -2787,6 +2802,79 @@ def _select_previous_level_row(previous_rows: pd.DataFrame, row: Dict[str, objec
         ascending=[False, True, True],
     ).iloc[0]
     return selected
+
+
+def _apply_breakout_atr_fields(
+    row: Dict[str, object],
+    history: pd.DataFrame,
+    reference_date: pd.Timestamp,
+    days: int,
+) -> None:
+    window = _watchlist_atr_window(history, row, reference_date, days)
+    if window.empty:
+        return
+
+    atr_window = window.copy()
+    atr_window["previous_close"] = atr_window["close"].shift(1)
+    high_low = atr_window["max"] - atr_window["min"]
+    high_prev_close = (atr_window["max"] - atr_window["previous_close"]).abs()
+    low_prev_close = (atr_window["min"] - atr_window["previous_close"]).abs()
+    atr_window["true_range"] = pd.concat([high_low, high_prev_close, low_prev_close], axis=1).max(axis=1)
+
+    tr_window = atr_window.iloc[1:].copy()
+    true_ranges = pd.to_numeric(tr_window["true_range"], errors="coerce").dropna()
+    if len(true_ranges) < days:
+        return
+
+    atr_value = float(true_ranges.mean())
+    latest_price = _numeric_value(row.get("close")) or _numeric_value(atr_window.iloc[-1].get("close"))
+    row["atr_3"] = _optional_round_value(atr_value, 2)
+    row["atr_3_percent"] = _optional_round_value(atr_value / latest_price * 100, 2) if latest_price else None
+    row["atr_3_window"] = _format_date_range([pd.Timestamp(value) for value in tr_window["date"].tolist()])
+
+
+def _watchlist_atr_window(
+    history: pd.DataFrame,
+    row: Dict[str, object],
+    reference_date: pd.Timestamp,
+    days: int,
+) -> pd.DataFrame:
+    candidates = _watchlist_history_candidates(history, row)
+    if candidates.empty or "date" not in candidates.columns:
+        return pd.DataFrame()
+
+    candidates = candidates[candidates["date"] <= reference_date].copy()
+    if candidates.empty:
+        return pd.DataFrame()
+
+    available_dates = sorted(pd.Timestamp(value).normalize() for value in candidates["date"].dropna().unique())
+    if len(available_dates) < days + 1:
+        return pd.DataFrame()
+    atr_dates = available_dates[-(days + 1):]
+
+    window = candidates[candidates["date"].isin(atr_dates)].copy()
+    for column in ("max", "min", "close", "Trading_Volume"):
+        if column not in window.columns:
+            window[column] = pd.NA
+        window[column] = pd.to_numeric(window[column], errors="coerce")
+    window = window.dropna(subset=["date", "max", "min", "close"])
+    if window.empty:
+        return pd.DataFrame()
+
+    window["_volume_sort"] = window["Trading_Volume"].fillna(0)
+    window["_contract_sort"] = window.get("contract_date", pd.Series("", index=window.index)).astype(str)
+    window["_futures_sort"] = window.get("finmind_futures_id", pd.Series("", index=window.index)).astype(str)
+    window = (
+        window.sort_values(
+            ["date", "_volume_sort", "_contract_sort", "_futures_sort"],
+            ascending=[True, False, True, True],
+        )
+        .drop_duplicates(subset=["date"], keep="first")
+        .sort_values("date")
+    )
+    if len(window) != len(atr_dates):
+        return pd.DataFrame()
+    return window.reset_index(drop=True)
 
 
 def _apply_previous_breakout_fields(
@@ -4069,7 +4157,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
     }}
     #breakout-up-table-wrap table,
     #breakout-down-table-wrap table {{
-      min-width: 980px;
+      min-width: 1060px;
     }}
     .breakout-volume-filter {{
       flex-shrink: 0;
@@ -4379,6 +4467,10 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
           <h2>精選股池</h2>
           <span id="pool-tabs-subtitle">小型股票期貨，價格 500~5000，流動與波動同時達標</span>
         </div>
+        <label class="filter-control breakout-volume-filter" for="breakout-min-volume">
+          <span>突破成交口數 >=</span>
+          <input id="breakout-min-volume" type="number" min="0" step="50" value="0" inputmode="numeric">
+        </label>
         <div class="pool-tab-list" role="tablist" aria-label="股期股池頁簽">
           <button class="pool-tab is-active" id="pool-tab-small" type="button" role="tab" aria-selected="true" aria-controls="pool-panel-small" data-pool-tab="small">小型股期</button>
           <button class="pool-tab" id="pool-tab-large" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-large" data-pool-tab="large">大型股期</button>
@@ -4386,10 +4478,6 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
           <button class="pool-tab" id="pool-tab-breakout-up" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-breakout-up" data-pool-tab="breakout-up">突破昨高</button>
           <button class="pool-tab" id="pool-tab-breakout-down" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-breakout-down" data-pool-tab="breakout-down">跌破昨低</button>
         </div>
-        <label class="filter-control breakout-volume-filter" for="breakout-min-volume">
-          <span>突破成交口數 >=</span>
-          <input id="breakout-min-volume" type="number" min="0" step="50" value="0" inputmode="numeric">
-        </label>
       </div>
       <div class="pool-tab-panel" id="pool-panel-small" role="tabpanel" aria-labelledby="pool-tab-small" data-pool-panel="small">
         <div class="scroll-frame">
@@ -5822,10 +5910,21 @@ def _breakout_display_rows(
     ]
     sorted_rows = sorted(
         breakout_rows,
-        key=lambda row: (_breakout_magnitude(row), _numeric_value(row.get("volume")) or 0),
-        reverse=True,
+        key=lambda row: (
+            _desc_sort_number(row.get("atr_3_percent")),
+            _desc_sort_number(row.get("volume")),
+            _desc_sort_number(_breakout_magnitude(row)),
+            _string_value(row.get("stock_id")),
+        ),
     )
     return sorted_rows[:limit]
+
+
+def _desc_sort_number(value: object) -> float:
+    number = _float_or_none(value)
+    if number is None:
+        return float("inf")
+    return -number
 
 
 def _breakout_magnitude(row: Dict[str, object]) -> float:
@@ -5865,6 +5964,7 @@ def _render_breakout_rows(rows: List[Dict[str, object]], direction: str, min_vol
         spread_per = row.get("spread_per")
         distance_to_high = row.get("distance_to_previous_high_percent")
         distance_to_low = row.get("distance_to_previous_low_percent")
+        atr_3_percent = row.get("atr_3_percent")
         body_rows.append(
             """<tr>
   <td class="number">{rank}</td>
@@ -5872,6 +5972,7 @@ def _render_breakout_rows(rows: List[Dict[str, object]], direction: str, min_vol
   <td>{status}</td>
   <td class="number">{close}</td>
   <td class="number {spread_per_class}">{spread_per}</td>
+  <td class="number">{atr_3_percent}</td>
   <td class="number">{previous_high}</td>
   <td class="number {distance_to_high_class}">{distance_to_high}</td>
   <td class="number">{previous_low}</td>
@@ -5886,6 +5987,7 @@ def _render_breakout_rows(rows: List[Dict[str, object]], direction: str, min_vol
                 close=_format_optional_number(row.get("close"), 2),
                 spread_per=_format_optional_percent(spread_per, 2),
                 spread_per_class=_change_class(spread_per),
+                atr_3_percent=_format_optional_percent(atr_3_percent, 2),
                 previous_high=_format_optional_number(row.get("previous_high"), 2),
                 distance_to_high=_format_optional_percent(distance_to_high, 2),
                 distance_to_high_class=_change_class(distance_to_high),
@@ -5899,7 +6001,7 @@ def _render_breakout_rows(rows: List[Dict[str, object]], direction: str, min_vol
 
     if not body_rows:
         body_rows.append(
-            '<tr><td class="empty-row" colspan="11">{}</td></tr>'.format(
+            '<tr><td class="empty-row" colspan="12">{}</td></tr>'.format(
                 escape(_breakout_empty_message(direction))
             )
         )
@@ -5912,6 +6014,7 @@ def _render_breakout_rows(rows: List[Dict[str, object]], direction: str, min_vol
       <th>狀態</th>
       <th>現價</th>
       <th>漲跌幅%</th>
+      <th>ATR3%</th>
       <th>昨高</th>
       <th>距昨高</th>
       <th>昨低</th>
@@ -6170,7 +6273,7 @@ def _dashboard_script() -> str:
   const INTRADAY_BUCKET_MINUTES = 15;
   const INTRADAY_TOP_N = 50;
   const INTRADAY_CHART_TOP_N = 24;
-  const BREAKOUT_TOP_N = 20;
+  const BREAKOUT_TOP_N = 30;
   const OUT_OF_TOP_RANK = INTRADAY_TOP_N + 1;
   const INTRADAY_STORAGE_PREFIX = "stock-futures-intraday-history-v1";
   const completedClosingRefreshes = new Set();
@@ -6224,6 +6327,7 @@ def _dashboard_script() -> str:
         <th>狀態</th>
         <th>現價</th>
         <th>漲跌幅%</th>
+        <th>ATR3%</th>
         <th>昨高</th>
         <th>距昨高</th>
         <th>昨低</th>
@@ -6261,8 +6365,8 @@ def _dashboard_script() -> str:
     small: "小型股票期貨，價格 500~5000，流動與波動同時達標",
     large: "大型股票期貨，價格 200 以下，口數與 ATR 條件達標",
     new: "前一交易日 50 名外，最新交易日進入口數 Top 50",
-    "breakout-up": "用全部 watchlist 篩出突破昨高標的，依突破幅度取前 20 名",
-    "breakout-down": "用全部 watchlist 篩出跌破昨低標的，依跌破幅度取前 20 名"
+    "breakout-up": "用全部 watchlist 篩出突破昨高標的，依 ATR3% 取前 30 名",
+    "breakout-down": "用全部 watchlist 篩出跌破昨低標的，依 ATR3% 取前 30 名"
   };
   const watchlistTabSubtitles = {
     all: "全部股票期貨產品，即時報價一律取近月契約",
@@ -7839,6 +7943,11 @@ def _dashboard_script() -> str:
     return value === null ? -1 : Math.abs(value);
   }
 
+  function breakoutAtrPercent(row) {
+    const value = numberOrNull(row && row.atr_3_percent);
+    return value === null ? -1 : value;
+  }
+
   function breakoutDisplayRows(rows, direction) {
     return (rows || [])
       .filter((row) => {
@@ -7848,10 +7957,12 @@ def _dashboard_script() -> str:
       })
       .slice()
       .sort((a, b) => {
-        const magnitudeDiff = breakoutMagnitude(b) - breakoutMagnitude(a);
-        if (magnitudeDiff) return magnitudeDiff;
+        const atrDiff = breakoutAtrPercent(b) - breakoutAtrPercent(a);
+        if (atrDiff) return atrDiff;
         const volumeDiff = (numberOrNull(b.volume) || 0) - (numberOrNull(a.volume) || 0);
         if (volumeDiff) return volumeDiff;
+        const magnitudeDiff = breakoutMagnitude(b) - breakoutMagnitude(a);
+        if (magnitudeDiff) return magnitudeDiff;
         return String(a.stock_id || "").localeCompare(String(b.stock_id || ""), "zh-Hant");
       })
       .slice(0, BREAKOUT_TOP_N);
@@ -7877,7 +7988,7 @@ def _dashboard_script() -> str:
   function renderBreakoutRows(rows, direction, tableName) {
     const displayRows = breakoutDisplayRows(rows, direction);
     if (!displayRows.length) {
-      return emptyRender(`<tr><td class="empty-row" colspan="11">${escapeHtml(breakoutEmptyMessage(direction))}</td></tr>`);
+      return emptyRender(`<tr><td class="empty-row" colspan="12">${escapeHtml(breakoutEmptyMessage(direction))}</td></tr>`);
     }
     const signatures = new Map();
     const html = displayRows.map((row, index) => {
@@ -7890,6 +8001,9 @@ def _dashboard_script() -> str:
         row.breakout_direction,
         row.close,
         row.spread_per,
+        row.atr_3,
+        row.atr_3_percent,
+        row.atr_3_window,
         row.previous_date,
         row.previous_high,
         row.previous_low,
@@ -7905,6 +8019,7 @@ def _dashboard_script() -> str:
         <td>${renderBreakoutStatus(row)}</td>
         <td class="number">${formatNumber(row.close, 2)}</td>
         <td class="number ${spreadPerClass}">${formatPercentValue(row.spread_per)}</td>
+        <td class="number">${formatPercentValue(row.atr_3_percent)}</td>
         <td class="number">${formatNumber(row.previous_high, 2)}</td>
         <td class="number ${distanceToHighClass}">${formatPercentValue(row.distance_to_previous_high_percent)}</td>
         <td class="number">${formatNumber(row.previous_low, 2)}</td>
@@ -8012,14 +8127,14 @@ def _dashboard_script() -> str:
       "breakoutUp",
       "breakout-up-table-wrap",
       breakoutTableHead,
-      `<tr><td class="empty-row" colspan="11">${escapeHtml(message)}</td></tr>`,
+      `<tr><td class="empty-row" colspan="12">${escapeHtml(message)}</td></tr>`,
       new Map()
     );
     renderTable(
       "breakoutDown",
       "breakout-down-table-wrap",
       breakoutTableHead,
-      `<tr><td class="empty-row" colspan="11">${escapeHtml(message)}</td></tr>`,
+      `<tr><td class="empty-row" colspan="12">${escapeHtml(message)}</td></tr>`,
       new Map()
     );
     renderTable(

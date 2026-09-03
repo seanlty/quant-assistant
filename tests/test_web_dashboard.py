@@ -1137,6 +1137,9 @@ def test_dashboard_cache_migrates_pool_snapshot_missing_spread(monkeypatch):
                 "distance_to_previous_low_percent": 6.32,
                 "breakout_direction": "up",
                 "breakout_label": "突破昨高",
+                "atr_3": 18.5,
+                "atr_3_percent": 3.7,
+                "atr_3_window": "2026-06-13~2026-06-15",
             }
         ],
         source={
@@ -1868,6 +1871,30 @@ def test_watchlist_previous_levels_mark_high_and_low_breakouts():
     futures_history = pd.DataFrame(
         [
             {
+                "date": "2026-06-12",
+                "stock_id": "2330",
+                "futures_id": "CD",
+                "finmind_futures_id": "CDF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 100,
+                "min": 90,
+                "close": 96,
+                "Trading_Volume": 2800,
+            },
+            {
+                "date": "2026-06-13",
+                "stock_id": "2330",
+                "futures_id": "CD",
+                "finmind_futures_id": "CDF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 102,
+                "min": 94,
+                "close": 100,
+                "Trading_Volume": 2900,
+            },
+            {
                 "date": "2026-06-15",
                 "stock_id": "2330",
                 "futures_id": "CD",
@@ -1890,6 +1917,30 @@ def test_watchlist_previous_levels_mark_high_and_low_breakouts():
                 "min": 96,
                 "close": 101,
                 "Trading_Volume": 100,
+            },
+            {
+                "date": "2026-06-12",
+                "stock_id": "2303",
+                "futures_id": "CC",
+                "finmind_futures_id": "CCF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 98,
+                "min": 92,
+                "close": 96,
+                "Trading_Volume": 1800,
+            },
+            {
+                "date": "2026-06-13",
+                "stock_id": "2303",
+                "futures_id": "CC",
+                "finmind_futures_id": "CCF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 99,
+                "min": 93,
+                "close": 96,
+                "Trading_Volume": 1900,
             },
             {
                 "date": "2026-06-15",
@@ -1915,6 +1966,18 @@ def test_watchlist_previous_levels_mark_high_and_low_breakouts():
                 "close": 106,
                 "Trading_Volume": 1200,
             },
+            {
+                "date": "2026-06-16",
+                "stock_id": "2303",
+                "futures_id": "CC",
+                "finmind_futures_id": "CCF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 89,
+                "min": 86,
+                "close": 88,
+                "Trading_Volume": 900,
+            },
         ]
     )
 
@@ -1926,43 +1989,48 @@ def test_watchlist_previous_levels_mark_high_and_low_breakouts():
     assert enriched[0]["distance_to_previous_high_percent"] == 0.95
     assert enriched[0]["breakout_direction"] == "up"
     assert enriched[0]["breakout_label"] == "突破昨高"
+    assert enriched[0]["atr_3"] == 8.67
+    assert enriched[0]["atr_3_percent"] == 8.18
+    assert enriched[0]["atr_3_window"] == "2026-06-13~2026-06-16"
     assert enriched[1]["previous_low"] == 90.0
     assert enriched[1]["distance_to_previous_low_percent"] == -2.22
     assert enriched[1]["breakout_direction"] == "down"
     assert enriched[1]["breakout_label"] == "跌破昨低"
 
 
-def test_breakout_display_rows_split_direction_and_limit_top_20():
+def test_breakout_display_rows_split_direction_and_limit_top_30_by_atr():
     rows = []
-    for index in range(25):
+    for index in range(35):
         rows.append(
             {
                 "stock_id": f"UP{index:02d}",
                 "volume": 1000 + index,
                 "breakout_direction": "up",
-                "distance_to_previous_high_percent": index + 1,
+                "atr_3_percent": index + 1,
+                "distance_to_previous_high_percent": 100 - index,
                 "distance_to_previous_low_percent": index + 5,
             }
         )
-    for index in range(25):
+    for index in range(35):
         rows.append(
             {
                 "stock_id": f"DN{index:02d}",
                 "volume": 800 + index,
                 "breakout_direction": "down",
+                "atr_3_percent": index + 1,
                 "distance_to_previous_high_percent": -index,
-                "distance_to_previous_low_percent": -(index + 1),
+                "distance_to_previous_low_percent": -(100 - index),
             }
         )
 
     up_rows = _breakout_display_rows(rows, "up")
     down_rows = _breakout_display_rows(rows, "down", min_volume=810)
 
-    assert len(up_rows) == 20
-    assert up_rows[0]["stock_id"] == "UP24"
+    assert len(up_rows) == 30
+    assert up_rows[0]["stock_id"] == "UP34"
     assert up_rows[-1]["stock_id"] == "UP05"
-    assert len(down_rows) == 15
-    assert down_rows[0]["stock_id"] == "DN24"
+    assert len(down_rows) == 25
+    assert down_rows[0]["stock_id"] == "DN34"
     assert all(row["breakout_direction"] == "down" and row["volume"] >= 810 for row in down_rows)
 
 
@@ -2510,6 +2578,9 @@ def test_render_dashboard_html_contains_daily_pool_table():
                 "distance_to_previous_low_percent": 4.65,
                 "breakout_direction": "up",
                 "breakout_label": "突破昨高",
+                "atr_3": 18.5,
+                "atr_3_percent": 3.7,
+                "atr_3_window": "2026-06-10~2026-06-12",
             },
             {
                 "date": "2026-06-12",
@@ -2539,6 +2610,9 @@ def test_render_dashboard_html_contains_daily_pool_table():
                 "distance_to_previous_low_percent": -0.55,
                 "breakout_direction": "down",
                 "breakout_label": "跌破昨低",
+                "atr_3": 2.4,
+                "atr_3_percent": 4.39,
+                "atr_3_window": "2026-06-10~2026-06-12",
             },
         ],
         source={"price_rows": 1200, "contract_rows": 300},
@@ -2597,7 +2671,9 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert "突破昨日高點列表" in html
     assert "跌破昨日低點列表" in html
     assert 'id="breakout-min-volume"' in html
+    assert html.index('id="breakout-min-volume"') < html.index('role="tablist" aria-label="股期股池頁簽"')
     assert "突破成交口數 >=" in html
+    assert "ATR3%" in html
     assert "突破昨高" in html
     assert 'class="breakout-status is-up"' in html
     assert 'class="breakout-status is-down"' in html
@@ -2662,7 +2738,7 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert "<th>股票</th>\n      <th>漲跌</th>\n      <th>漲跌%</th>\n      <th>成交口數</th>" in html
     assert "<th>收盤</th>\n      <th>類型</th>\n      <th>合約月份</th>" in html
     assert "<th>合約月份</th>\n      <th>日期</th>" in html
-    assert "<th>狀態</th>\n      <th>現價</th>\n      <th>漲跌幅%</th>" in html
+    assert "<th>狀態</th>\n      <th>現價</th>\n      <th>漲跌幅%</th>\n      <th>ATR3%</th>" in html
     assert "<th>昨高</th>\n      <th>距昨高</th>\n      <th>昨低</th>" in html
     assert '<td class="number positive">12.50</td>' not in html
     assert '<td class="number negative">-1.40</td>' not in html
@@ -2689,8 +2765,10 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "renderButterflyChart(payload.watchlist_rows || [])" in html
     assert "renderBreakoutTables(payload.watchlist_rows || [])" in html
     assert "breakoutDisplayRows" in html
+    assert "breakoutAtrPercent" in html
     assert "breakoutTableHead" in html
-    assert "BREAKOUT_TOP_N = 20" in html
+    assert "BREAKOUT_TOP_N = 30" in html
+    assert "依 ATR3% 取前 30 名" in html
     assert ".slice(0, BREAKOUT_TOP_N)" in html
     assert "initBreakoutFilters" in html
     assert "setBreakoutMinVolume" in html
