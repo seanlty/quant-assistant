@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ from src.web_dashboard import (
     build_futures_product_history,
     build_futures_strategy_pool,
     fetch_fugle_near_month_candles,
+    fetch_recent_finmind_trading_dates,
     build_new_entry_pool,
     build_stock_futures_contract_map_from_fugle,
     build_stock_futures_contract_map,
@@ -709,6 +711,64 @@ def test_admin_refresh_rejects_missing_or_wrong_bearer(monkeypatch):
     payload = json.loads(body.decode("utf-8"))
     assert status == 401
     assert payload["status"] == "unauthorized"
+
+
+def test_admin_diagnostics_reports_safe_finmind_token_details(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_REFRESH_TOKEN", "secret-token")
+    monkeypatch.setenv("FINMIND_API_TOKEN", "  Bearer finmind-token  ")
+    monkeypatch.setenv("FINMIND_API_KEY", "older-token")
+    monkeypatch.delenv("FINMIND_TOKEN", raising=False)
+
+    class FakeResponse:
+        status_code = 403
+        url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTradingDate"
+
+        def json(self):
+            return {"msg": "ip banned", "status": 403}
+
+    monkeypatch.setattr("src.web_dashboard.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    status, _, body = build_dashboard_response(
+        "/api/admin/diagnostics",
+        "probe=1",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    payload = json.loads(body.decode("utf-8"))
+
+    assert status == 200
+    assert payload["cache_schema_version"] == DASHBOARD_CACHE_SCHEMA_VERSION
+    assert payload["breakout_top_n"] == 30
+    assert payload["breakout_atr_days"] == 3
+    assert payload["finmind_token"]["present"] is True
+    assert payload["finmind_token"]["source_env"] == "FINMIND_API_TOKEN"
+    assert payload["finmind_token"]["length"] == len("finmind-token")
+    assert payload["finmind_token"]["fingerprint"] == hashlib.sha256(b"finmind-token").hexdigest()[:12]
+    assert payload["finmind_token"]["configured_envs"]["FINMIND_API_TOKEN"]["has_surrounding_whitespace"] is True
+    assert payload["finmind_token"]["configured_envs"]["FINMIND_API_TOKEN"]["has_bearer_prefix"] is True
+    assert payload["finmind_token"]["configured_envs"]["FINMIND_API_TOKEN"]["normalized_length"] == len("finmind-token")
+    assert "finmind-token" not in body.decode("utf-8")
+    assert payload["finmind_trading_date_probe"]["http_status"] == 403
+    assert payload["finmind_trading_date_probe"]["msg"] == "ip banned"
+
+
+def test_finmind_trading_date_http_error_includes_response_body(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTradingDate"
+
+        def json(self):
+            return {"msg": "ip banned", "status": 403}
+
+    monkeypatch.setattr("src.web_dashboard.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(RuntimeError) as excinfo:
+        fetch_recent_finmind_trading_dates("finmind-token", date(2026, 6, 17), 3)
+
+    message = str(excinfo.value)
+    assert "FinMind trading-date request failed" in message
+    assert "http_status=403" in message
+    assert "finmind_status=403" in message
+    assert "msg=ip banned" in message
 
 
 def test_admin_refresh_intraday_snapshot_uses_bearer_token(monkeypatch):

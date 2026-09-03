@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import os
@@ -102,6 +103,7 @@ DEFAULT_STOCK_INDUSTRY_MAP_CACHE_SECONDS = 7 * 24 * 60 * 60
 FINAL_MIN_PRODUCT_COVERAGE = 0.7
 FINAL_MIN_PRODUCTS = 20
 ADMIN_REFRESH_TOKEN_ENV = "DASHBOARD_REFRESH_TOKEN"
+FINMIND_TOKEN_ENV_NAMES = ("FINMIND_API_TOKEN", "FINMIND_API_KEY", "FINMIND_TOKEN")
 ELECTRONICS_INDUSTRY_CATEGORIES = {
     "半導體業",
     "電子零組件業",
@@ -202,8 +204,27 @@ def load_environment() -> None:
     load_dotenv(os.path.join(_project_root(), ".env"))
 
 
+def _normalize_env_token(value: object) -> str:
+    token = str(value or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token
+
+
+def _env_token_with_source(names: Sequence[str]) -> Tuple[Optional[str], Optional[str]]:
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            continue
+        token = _normalize_env_token(value)
+        if token:
+            return token, name
+    return None, None
+
+
 def get_finmind_token() -> Optional[str]:
-    return os.getenv("FINMIND_API_TOKEN") or os.getenv("FINMIND_API_KEY") or os.getenv("FINMIND_TOKEN")
+    token, _ = _env_token_with_source(FINMIND_TOKEN_ENV_NAMES)
+    return token
 
 
 def get_fugle_token() -> Optional[str]:
@@ -939,6 +960,31 @@ def build_daily_pool_snapshot(
     )
 
 
+def _finmind_response_payload(response: requests.Response) -> Dict[str, object]:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = str(getattr(response, "text", "") or "")
+        return {"body": text[:300]}
+    return payload if isinstance(payload, dict) else {"body": str(payload)[:300]}
+
+
+def _format_finmind_error_context(response: requests.Response, payload: Dict[str, object]) -> str:
+    parts = ["http_status={}".format(response.status_code)]
+    finmind_status = payload.get("status")
+    if finmind_status not in (None, ""):
+        parts.append("finmind_status={}".format(finmind_status))
+    message = _string_value(payload.get("msg") or payload.get("message") or payload.get("error")).strip()
+    if message:
+        parts.append("msg={}".format(message[:200]))
+    elif payload.get("body"):
+        parts.append("body={}".format(_string_value(payload.get("body"))[:200]))
+    url = _string_value(getattr(response, "url", "")).strip()
+    if url:
+        parts.append("url={}".format(url))
+    return ", ".join(parts)
+
+
 def fetch_recent_finmind_trading_dates(
     token: str,
     end_day: date,
@@ -952,8 +998,9 @@ def fetch_recent_finmind_trading_dates(
         headers=headers,
         timeout=timeout,
     )
-    response.raise_for_status()
-    payload = response.json()
+    payload = _finmind_response_payload(response)
+    if response.status_code >= 400:
+        raise RuntimeError("FinMind trading-date request failed: {}".format(_format_finmind_error_context(response, payload)))
     if payload.get("status") != 200:
         raise RuntimeError("FinMind trading-date error: {}".format(payload.get("msg", payload)))
 
@@ -5522,6 +5569,85 @@ def _trajectory_history_summary(history: Dict[str, object]) -> Dict[str, object]
     }
 
 
+def _token_fingerprint(token: Optional[str]) -> str:
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _finmind_token_diagnostics() -> Dict[str, object]:
+    token, source = _env_token_with_source(FINMIND_TOKEN_ENV_NAMES)
+    configured_envs = {}
+    for name in FINMIND_TOKEN_ENV_NAMES:
+        raw_value = os.getenv(name)
+        raw_text = "" if raw_value is None else str(raw_value)
+        trimmed = raw_text.strip()
+        normalized = _normalize_env_token(raw_text)
+        configured_envs[name] = {
+            "present": bool(normalized),
+            "raw_length": len(raw_text) if raw_value is not None else 0,
+            "trimmed_length": len(trimmed),
+            "normalized_length": len(normalized),
+            "has_surrounding_whitespace": raw_value is not None and raw_text != trimmed,
+            "has_bearer_prefix": trimmed.lower().startswith("bearer "),
+        }
+    return {
+        "present": bool(token),
+        "source_env": source or "",
+        "fingerprint": _token_fingerprint(token),
+        "length": len(token or ""),
+        "configured_envs": configured_envs,
+    }
+
+
+def _probe_finmind_trading_dates(timeout: int = 10) -> Dict[str, object]:
+    token = get_finmind_token()
+    if not token:
+        return {"status": "missing_token"}
+    try:
+        response = requests.get(
+            FINMIND_DATA_URL,
+            params={"dataset": "TaiwanStockTradingDate"},
+            headers={"Authorization": "Bearer {}".format(token)},
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return {
+            "status": "request_failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:300],
+        }
+
+    payload = _finmind_response_payload(response)
+    data = payload.get("data") if isinstance(payload.get("data"), list) else []
+    message = _string_value(payload.get("msg") or payload.get("message") or payload.get("error")).strip()
+    result = {
+        "status": "ok" if response.status_code < 400 and payload.get("status") == 200 else "failed",
+        "http_status": int(response.status_code),
+        "finmind_status": payload.get("status"),
+        "msg": message[:200],
+        "row_count": len(data),
+    }
+    if "body" in payload and not message:
+        result["body"] = _string_value(payload.get("body"))[:200]
+    return result
+
+
+def _handle_admin_diagnostics(query: Dict[str, List[str]]) -> Tuple[int, str, bytes]:
+    load_environment()
+    payload = {
+        "status": "ok",
+        "generated_at": format_taipei_datetime(),
+        "cache_schema_version": DASHBOARD_CACHE_SCHEMA_VERSION,
+        "breakout_top_n": BREAKOUT_TAB_TOP_N,
+        "breakout_atr_days": BREAKOUT_ATR_DAYS,
+        "finmind_token": _finmind_token_diagnostics(),
+    }
+    if _query_flag(query, "probe"):
+        payload["finmind_trading_date_probe"] = _probe_finmind_trading_dates()
+    return _json_response(payload, 200)
+
+
 def rebuild_intraday_trajectory_from_fugle(
     as_of_date: Optional[object] = None,
     criteria: StockPoolCriteria = StockPoolCriteria(),
@@ -5711,13 +5837,15 @@ def build_dashboard_response(
         payload = intraday_trajectory_cache.read(as_of_date)
         return _json_response(payload, 200)
 
-    if path == "/api/admin/refresh":
+    if path in {"/api/admin/refresh", "/api/admin/diagnostics"}:
         if method.upper() not in {"GET", "POST"}:
             return _json_response({"error": "method not allowed", "status": "method_not_allowed"}, 405)
         auth_error = _admin_auth_error(headers)
         if auth_error is not None:
             status, payload = auth_error
             return _json_response(payload, status)
+        if path == "/api/admin/diagnostics":
+            return _handle_admin_diagnostics(query)
         return _handle_admin_refresh(query, as_of_date, criteria)
 
     if path == "/health":

@@ -47,6 +47,50 @@ curl --fail-with-body --show-error --silent --location \
 
 `trajectory_snapshot_count` 實際數字會依當天可取得的 Fugle 5 分 K 截點數增加。盤中 09:30 附近可能只有數個截點；盤後重建通常會接近完整 08:45 到 13:45。
 
+## FinMind 403 排查
+
+若 `/api/pool` 或 `/api/admin/refresh` 回傳：
+
+```text
+403 Client Error: Forbidden for url: https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTradingDate
+```
+
+代表 dashboard snapshot 重建一開始打 FinMind 交易日資料就被拒。FinMind 官方 IP 封鎖政策指出，短時間大量 4xx、無效 token、token 格式錯誤、參數錯誤或超額請求可能暫時封鎖來源 IP；封鎖期間所有 API 都會回 `403 Forbidden`，通常約 30 分鐘後解除。
+
+先暫停 GitHub Actions 或手動 refresh 重試 30 分鐘，避免持續送 4xx 讓封鎖延長。接著部署含 diagnostics endpoint 的版本後，只打一輪：
+
+```powershell
+$base = "https://futures-dashboard-app.zeabur.app"
+$headers = @{ Authorization = "Bearer $env:DASHBOARD_REFRESH_TOKEN" }
+
+Invoke-RestMethod `
+  -Uri "$base/api/admin/diagnostics?probe=1" `
+  -Headers $headers |
+  ConvertTo-Json -Depth 8
+```
+
+重點看：
+
+- `cache_schema_version`：應為目前程式碼的 schema 版本。
+- `breakout_top_n` / `breakout_atr_days`：可確認是否跑到最新部署版本。
+- `finmind_token.source_env`：實際命中的 env 名稱，優先序為 `FINMIND_API_TOKEN`、`FINMIND_API_KEY`、`FINMIND_TOKEN`。
+- `finmind_token.configured_envs.*.has_surrounding_whitespace`：若為 `true`，代表 Zeabur env 有前後空白。
+- `finmind_token.fingerprint`：用於比對 token 是否真的是你預期的那一組，不會暴露 token 本體。
+- `finmind_trading_date_probe.http_status` / `msg`：若為 `403` 且 `msg` 是 `ip banned`，就是 Zeabur 出口 IP 被 FinMind 暫時封鎖。
+
+本機 token fingerprint 可用 PowerShell 算：
+
+```powershell
+$token = $env:FINMIND_API_TOKEN.Trim()
+[Convert]::ToHexString(
+  [System.Security.Cryptography.SHA256]::HashData(
+    [System.Text.Encoding]::UTF8.GetBytes($token)
+  )
+).Substring(0, 12).ToLower()
+```
+
+如果 diagnostics 顯示 token fingerprint 正確，但 probe 仍是 `ip banned`，處理方式是停止所有會打 FinMind 的排程與手動重試，等封鎖解除後再打一次 `intraday_snapshot`。
+
 ## 先判斷目前壞在哪
 
 ### 1. 檢查 dashboard snapshot 是否更新
