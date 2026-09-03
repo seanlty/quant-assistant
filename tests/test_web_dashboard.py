@@ -15,6 +15,7 @@ from src.web_dashboard import (
     ContractMetadataCache,
     IntradayTrajectoryCache,
     StockIndustryMapCache,
+    DASHBOARD_CACHE_SCHEMA_VERSION,
     TAIPEI_TZ,
     add_fugle_contract_months,
     application,
@@ -37,6 +38,7 @@ from src.web_dashboard import (
     criteria_from_query,
     enrich_latest_quotes_with_daily_prices,
     enrich_watchlist_records_with_industry,
+    enrich_watchlist_records_with_previous_levels,
     final_readiness_from_daily_history,
     format_taipei_datetime,
     fugle_connection_status,
@@ -106,7 +108,7 @@ def _minimal_snapshot(min_atr_percent=3.0):
         source={
             "price_rows": 0,
             "contract_rows": 0,
-            "cache_schema_version": 5,
+            "cache_schema_version": DASHBOARD_CACHE_SCHEMA_VERSION,
             "cache_kind": "final",
             "snapshot_stage": "final",
             "final_ready": True,
@@ -1058,6 +1060,33 @@ def test_dashboard_cache_uses_shared_30_second_live_snapshot(monkeypatch):
     assert cache.get_snapshot(criteria=criteria, as_of_date=date(2026, 6, 16)) is fresh_snapshot
 
 
+def test_dashboard_cache_rebuilds_snapshot_with_older_schema(monkeypatch):
+    criteria = StockPoolCriteria(min_atr_percent=4.0)
+    cache = DashboardCache(cache_dir="unused-cache-dir")
+    key = cache._criteria_key(criteria, date(2026, 6, 16), "intraday")
+    old_snapshot = _minimal_snapshot(criteria.min_atr_percent)
+    old_snapshot.source["cache_schema_version"] = DASHBOARD_CACHE_SCHEMA_VERSION - 1
+    old_snapshot.source["cache_kind"] = "intraday"
+    old_snapshot.source["snapshot_stage"] = "intraday"
+    old_snapshot.source["final_ready"] = False
+    cache.snapshots[key] = old_snapshot
+    cache.loaded_at[key] = datetime(2026, 6, 16, 10, 0, 0, tzinfo=TAIPEI_TZ)
+    fresh_snapshot = _minimal_snapshot(criteria.min_atr_percent)
+    fresh_snapshot.source["cache_kind"] = "intraday"
+
+    monkeypatch.delenv("DASHBOARD_CACHE_SECONDS", raising=False)
+    monkeypatch.setattr("src.web_dashboard.taipei_now", lambda: datetime(2026, 6, 16, 10, 0, 10, tzinfo=TAIPEI_TZ))
+    monkeypatch.setattr(cache, "_read_disk_snapshot", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(cache, "_write_disk_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr("src.web_dashboard.build_daily_pool_snapshot", lambda **kwargs: fresh_snapshot)
+
+    snapshot = cache.get_snapshot(criteria=criteria, as_of_date=date(2026, 6, 16))
+
+    assert snapshot is fresh_snapshot
+    assert snapshot.source["cache_schema_version"] == DASHBOARD_CACHE_SCHEMA_VERSION
+    assert snapshot.source["cache_kind"] == "intraday"
+
+
 def test_dashboard_cache_migrates_pool_snapshot_missing_spread(monkeypatch):
     criteria = StockPoolCriteria(min_atr_percent=4.0)
     cache = DashboardCache(cache_dir="unused-cache-dir")
@@ -1099,9 +1128,23 @@ def test_dashboard_cache_migrates_pool_snapshot_missing_spread(monkeypatch):
                 "spread": 12.5,
                 "industry_category": "半導體業",
                 "industry_group": "電子股",
+                "previous_date": "2026-06-15",
+                "previous_high": 1000.0,
+                "previous_low": 950.0,
+                "previous_close": 980.0,
+                "distance_to_previous_high_percent": 1.0,
+                "distance_to_previous_low_percent": 6.32,
+                "breakout_direction": "up",
+                "breakout_label": "突破昨高",
             }
         ],
-        source={},
+        source={
+            "cache_schema_version": DASHBOARD_CACHE_SCHEMA_VERSION,
+            "cache_kind": "intraday",
+            "snapshot_stage": "intraday",
+            "final_ready": False,
+            "final_readiness_reason": "test snapshot",
+        },
     )
     cache.snapshots[key] = old_snapshot
     cache.loaded_at[key] = datetime(2026, 6, 16, 9, 59, 45, tzinfo=TAIPEI_TZ)
@@ -1121,7 +1164,7 @@ def test_dashboard_cache_migrates_pool_snapshot_missing_spread(monkeypatch):
     assert snapshot.active_rows[0]["spread"] == 1.0
     assert snapshot.rows[0]["volume_rank_5d"] == [9, 8, 7, 6, 5]
     assert snapshot.active_rows[0]["volume_rank_5d"] == [30, 25, 22, 18, 12]
-    assert snapshot.source["cache_schema_version"] == 5
+    assert snapshot.source["cache_schema_version"] == DASHBOARD_CACHE_SCHEMA_VERSION
     assert snapshot.source["cache_kind"] == "intraday"
 
 
@@ -1794,6 +1837,100 @@ def test_build_stock_futures_watchlist_uses_all_stock_futures_volume():
     assert records[0]["contract_date"] == "202606"
 
 
+def test_watchlist_previous_levels_mark_high_and_low_breakouts():
+    watchlist_rows = [
+        {
+            "date": "2026-06-16",
+            "stock_id": "2330",
+            "stock_name": "台積電",
+            "futures_id": "CD, QF",
+            "finmind_futures_id": "CDF, QFF",
+            "contract_type": "regular, small",
+            "contract_type_label": "大型, 小型",
+            "contract_date": "202606",
+            "close": 106.0,
+            "volume": 1200,
+        },
+        {
+            "date": "2026-06-16",
+            "stock_id": "2303",
+            "stock_name": "聯電",
+            "futures_id": "CC",
+            "finmind_futures_id": "CCF",
+            "contract_type": "regular",
+            "contract_type_label": "大型",
+            "contract_date": "202606",
+            "close": 88.0,
+            "volume": 900,
+        },
+    ]
+    futures_history = pd.DataFrame(
+        [
+            {
+                "date": "2026-06-15",
+                "stock_id": "2330",
+                "futures_id": "CD",
+                "finmind_futures_id": "CDF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 105,
+                "min": 95,
+                "close": 100,
+                "Trading_Volume": 3000,
+            },
+            {
+                "date": "2026-06-15",
+                "stock_id": "2330",
+                "futures_id": "QF",
+                "finmind_futures_id": "QFF",
+                "contract_type": "small",
+                "contract_date": "202606",
+                "max": 110,
+                "min": 96,
+                "close": 101,
+                "Trading_Volume": 100,
+            },
+            {
+                "date": "2026-06-15",
+                "stock_id": "2303",
+                "futures_id": "CC",
+                "finmind_futures_id": "CCF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 100,
+                "min": 90,
+                "close": 95,
+                "Trading_Volume": 2000,
+            },
+            {
+                "date": "2026-06-16",
+                "stock_id": "2330",
+                "futures_id": "CD",
+                "finmind_futures_id": "CDF",
+                "contract_type": "regular",
+                "contract_date": "202606",
+                "max": 106,
+                "min": 98,
+                "close": 106,
+                "Trading_Volume": 1200,
+            },
+        ]
+    )
+
+    enriched = enrich_watchlist_records_with_previous_levels(watchlist_rows, futures_history)
+
+    assert enriched[0]["previous_date"] == "2026-06-15"
+    assert enriched[0]["previous_high"] == 105.0
+    assert enriched[0]["previous_low"] == 95.0
+    assert enriched[0]["distance_to_previous_high_percent"] == 0.95
+    assert enriched[0]["breakout_direction"] == "up"
+    assert enriched[0]["breakout_label"] == "突破昨高"
+    assert enriched[1]["previous_low"] == 90.0
+    assert enriched[1]["distance_to_previous_low_percent"] == -2.22
+    assert enriched[1]["breakout_direction"] == "down"
+    assert enriched[1]["breakout_label"] == "跌破昨低"
+
+
 def test_fugle_quote_volume_overrides_same_day_history():
     stock_futures = pd.DataFrame(
         [
@@ -2330,6 +2467,14 @@ def test_render_dashboard_html_contains_daily_pool_table():
                 "trading_session": "position",
                 "source": "TaiwanFuturesDaily",
                 "has_latest_trade": True,
+                "previous_date": "2026-06-11",
+                "previous_high": 1000.0,
+                "previous_low": 970.0,
+                "previous_close": 988.0,
+                "distance_to_previous_high_percent": 1.51,
+                "distance_to_previous_low_percent": 4.65,
+                "breakout_direction": "up",
+                "breakout_label": "突破昨高",
             }
         ],
         source={"price_rows": 1200, "contract_rows": 300},
@@ -2377,6 +2522,13 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert ".scroll-frame::after" in html
     assert "新進榜" in html
     assert "8299 / QNF" in html
+    assert "昨高低突破" in html
+    assert 'data-pool-tab="breakout"' in html
+    assert 'id="pool-panel-breakout"' in html
+    assert 'id="breakout-table-wrap"' in html
+    assert "突破昨日高點或跌破昨日低點" in html
+    assert "突破昨高" in html
+    assert 'class="breakout-status is-up"' in html
     assert "活潑股股期股池" not in html
     assert "高價股股期股池" not in html
     assert "股票期貨 Watchlist" in html
@@ -2425,8 +2577,10 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert 'data-pool-tab="small"' in html
     assert 'data-pool-tab="large"' in html
     assert 'data-pool-tab="new"' in html
+    assert 'data-pool-tab="breakout"' in html
     assert 'id="pool-panel-large"' in html
     assert 'id="pool-panel-new"' in html
+    assert 'id="pool-panel-breakout"' in html
     assert "<th>收盤價</th>\n      <th>漲跌幅%</th>\n      <th>ATR20%</th>" in html
     assert "<th>開盤累積" in html
     assert "aria-label=\"狀態說明\"" in html
@@ -2434,6 +2588,8 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert "<th>股票</th>\n      <th>漲跌</th>\n      <th>漲跌%</th>\n      <th>成交口數</th>" in html
     assert "<th>收盤</th>\n      <th>類型</th>\n      <th>合約月份</th>" in html
     assert "<th>合約月份</th>\n      <th>日期</th>" in html
+    assert "<th>狀態</th>\n      <th>現價</th>\n      <th>漲跌幅%</th>" in html
+    assert "<th>昨高</th>\n      <th>距昨高</th>\n      <th>昨低</th>" in html
     assert '<td class="number positive">12.50</td>' not in html
     assert '<td class="number negative">-1.40</td>' not in html
     assert "歷史主力月份" not in html
@@ -2457,6 +2613,9 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "renderTodayOverviewChart(payload.watchlist_rows || [])" in html
     assert "renderButterflyChart" in html
     assert "renderButterflyChart(payload.watchlist_rows || [])" in html
+    assert "renderBreakoutTable(payload.watchlist_rows || [])" in html
+    assert "breakoutDisplayRows" in html
+    assert "breakoutTableHead" in html
     assert "--bg: #ffffff;" in html
     assert 'applyTheme("light")' in html
     assert "scrollbar-color: var(--scrollbar-thumb) var(--panel)" in html

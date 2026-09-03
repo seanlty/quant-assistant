@@ -15,7 +15,7 @@ Web dashboard 的主線不是直接用股票現貨成交量，而是以股票期
    - `refresh=1`：要求略過既有快取重建。
 3. `DashboardCache.get_snapshot()` 決定使用記憶體快取、磁碟快取，或重新打外部 API。
 4. 若需要重建，`build_daily_pool_snapshot()` 會抓取 FinMind、Fugle、TAIFEX 資料並組成 `DashboardSnapshot`。
-5. 回傳 JSON 給前端，前端重畫股池、新進榜、watchlist 與今日速覽。
+5. 回傳 JSON 給前端，前端重畫股池、新進榜、昨高低突破、watchlist 與今日速覽。
 
 ```mermaid
 flowchart TD
@@ -32,8 +32,9 @@ flowchart TD
   Fugle --> History
   Contracts --> History
   History --> Pools["strategy pools / new entries / latest quotes"]
-  Pools --> Snapshot
-  Snapshot --> API
+   Pools --> Breakout["watchlist 昨高低突破欄位"]
+   Breakout --> Snapshot
+   Snapshot --> API
 ```
 
 ## Snapshot 建立邏輯
@@ -57,6 +58,7 @@ flowchart TD
    - 大型活躍股期池：`contract_type == "regular"`，價格 0 到 200。
    - 新進榜：最新一日進入成交口數 Top N、前一交易日未在 Top N。
    - Watchlist：最新日每個標的的股期報價與成交口數。
+   - 昨高低突破：用 `watchlist_rows` 當 universe，比對前一交易日同股票主力股期的 `max/min`，在 row 內補 `previous_high`、`previous_low`、`distance_to_previous_high_percent`、`distance_to_previous_low_percent`、`breakout_direction`、`breakout_label`。
 9. 將結果包成 `DashboardSnapshot`，並在 `source` 寫入資料來源、Fugle 狀態、final readiness 與 cache schema。
 
 ## 篩選規則
@@ -120,7 +122,7 @@ legacy 檔名沒有 `{cache_kind}`，例如：
 data/cache/dashboard_asof2026-06-16_vol5_top50_atr20_price500-5000_minatr3.json
 ```
 
-讀到舊 snapshot 時會透過 `migrate_cached_snapshot()` 補上 schema v3 需要的欄位，例如 `spread`、`snapshot_stage`、`final_ready`、`final_readiness_reason`、`cache_schema_version`。
+讀到舊 snapshot 時會透過 `migrate_cached_snapshot()` 補上相容欄位，但目前 production schema 是 v6。v6 需要 `watchlist_rows` 內含昨高/昨低突破欄位；舊 schema 會被標記 `breakout_levels_fallback` 並視為不相容，下一次 `/api/pool` 或 `/api/admin/refresh` 會自動重建 dashboard snapshot cache。
 
 ## TTL 與刷新規則
 
@@ -177,8 +179,8 @@ TTL 由環境變數控制：
 
 目前 `data/cache/` 內同時存在：
 
-- schema v3 的 `final` 檔，例如 2026-06-16 15:01 建立的正式快照。
-- legacy 無 cache kind 的舊檔，例如盤中建立的 schema v2 快照。
+- schema v6 以前的檔案會在讀取時被視為需要重建，避免昨高/昨低突破欄位缺失。
+- legacy 無 cache kind 的舊檔仍可被 reader 找到，但若 schema 不符，會走重建流程。
 
 這和程式中的 legacy reader / migration 設計一致。
 

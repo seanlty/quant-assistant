@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>昨日高低突破 Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7f8;
+      --panel: #ffffff;
+      --ink: #17201d;
+      --muted: #66736f;
+      --line: #dce3df;
+      --soft: #eef3f0;
+      --up: #dc2626;
+      --down: #1d4ed8;
+      --warn: #b45309;
+      --shadow: 0 18px 44px rgba(23, 32, 29, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    }
+
+    .page {
+      width: min(1500px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 22px 0 34px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 27px;
+      font-weight: 780;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      white-space: nowrap;
+    }
+
+    .panel {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      min-height: calc(100vh - 122px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .title-block h2 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 820;
+      letter-spacing: 0;
+    }
+
+    .title-block span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .tabs {
+      display: inline-grid;
+      grid-auto-flow: column;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 8px;
+      background: var(--soft);
+      overflow-x: auto;
+    }
+
+    button {
+      min-width: 92px;
+      height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 760;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    button.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 1px 7px rgba(23, 32, 29, 0.11);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfc;
+    }
+
+    .toolbar-left,
+    .toolbar-right {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .segments {
+      display: inline-grid;
+      grid-auto-flow: column;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    .volume-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .volume-input,
+    .search {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .volume-input {
+      width: 92px;
+      padding: 0 8px;
+      text-align: right;
+      font-weight: 760;
+    }
+
+    .search {
+      width: min(340px, 38vw);
+      padding: 0 11px;
+    }
+
+    .volume-input:focus,
+    .search:focus {
+      border-color: #6b938d;
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.13);
+    }
+
+    .summary {
+      display: flex;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .summary strong {
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .tab-panel {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .tab-panel[hidden] {
+      display: none;
+    }
+
+    .table-wrap {
+      height: 100%;
+      overflow: auto;
+    }
+
+    table {
+      width: 100%;
+      min-width: 1120px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      height: 38px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #f7faf9;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    tr:hover td {
+      background: #fbfcfc;
+    }
+
+    .number {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stock {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .stock strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+
+    .stock span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .status.high {
+      background: rgba(220, 38, 38, 0.10);
+      color: var(--up);
+    }
+
+    .status.low {
+      background: rgba(29, 78, 216, 0.10);
+      color: var(--down);
+    }
+
+    .status.near {
+      background: rgba(180, 83, 9, 0.10);
+      color: var(--warn);
+    }
+
+    .status.inside {
+      background: rgba(102, 115, 111, 0.12);
+      color: var(--muted);
+    }
+
+    .up { color: var(--up); }
+    .down { color: var(--down); }
+    .muted { color: var(--muted); }
+
+    .empty {
+      padding: 26px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      .page {
+        width: min(100vw - 20px, 760px);
+        padding-top: 16px;
+      }
+
+      header,
+      .panel-head,
+      .toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      header,
+      .panel-head {
+        display: flex;
+      }
+
+      .meta,
+      .toolbar-right {
+        justify-content: flex-start;
+      }
+
+      .tabs {
+        grid-auto-flow: column;
+        justify-content: start;
+      }
+
+      .search {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>昨日高低突破 Demo</h1>
+      <div class="meta">
+        <span class="pill" id="as-of-pill">--</span>
+        <span class="pill" id="universe-pill">--</span>
+        <span class="pill">watchlist_rows universe</span>
+      </div>
+    </header>
+
+    <section class="panel" aria-label="精選股池 Demo">
+      <div class="panel-head">
+        <div class="title-block">
+          <h2>精選股池</h2>
+          <span id="tab-subtitle">小型股票期貨，價格 500~5000，流動與波動同時達標</span>
+        </div>
+        <div class="tabs" role="tablist" aria-label="精選股池頁簽">
+          <button type="button" class="active" role="tab" aria-selected="true" data-tab="small">小型股期</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="large">大型股期</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="new">新進榜</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="breakout">昨日高低突破</button>
+        </div>
+      </div>
+
+      <div class="toolbar" aria-label="突破篩選">
+        <div class="toolbar-left">
+          <div class="segments" aria-label="突破類型">
+            <button type="button" class="active" data-mode="all">全部突破</button>
+            <button type="button" data-mode="high">突破昨高</button>
+            <button type="button" data-mode="low">跌破昨低</button>
+            <button type="button" data-mode="near">接近</button>
+          </div>
+          <div class="segments" aria-label="產業分類">
+            <button type="button" class="active" data-industry="all">全部</button>
+            <button type="button" data-industry="electronics">電子股</button>
+            <button type="button" data-industry="non-electronics">非電子</button>
+          </div>
+          <label class="volume-filter" for="min-volume">
+            成交口數 ≥
+            <input class="volume-input" id="min-volume" type="number" min="0" step="100" value="500" inputmode="numeric">
+          </label>
+          <input class="search" id="search" type="search" placeholder="搜尋代號或名稱">
+        </div>
+        <div class="toolbar-right summary">
+          <span>突破昨高 <strong id="high-count">0</strong></span>
+          <span>跌破昨低 <strong id="low-count">0</strong></span>
+          <span>接近 <strong id="near-count">0</strong></span>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="small">
+        <div class="table-wrap"><table id="small-table"></table></div>
+      </div>
+      <div class="tab-panel" data-panel="large" hidden>
+        <div class="table-wrap"><table id="large-table"></table></div>
+      </div>
+      <div class="tab-panel" data-panel="new" hidden>
+        <div class="table-wrap"><table id="new-table"></table></div>
+      </div>
+      <div class="tab-panel" data-panel="breakout" hidden>
+        <div class="table-wrap"><table id="breakout-table"></table></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="today_stock_industry_map_demo.js"></script>
+  <script src="today_all_stock_futures_strength_demo_data.js"></script>
+  <script>
+    const payload = window.TODAY_ALL_STOCK_FUTURES_STRENGTH_DATA || { rows: [] };
+    const industryPayload = window.TODAY_STOCK_INDUSTRY_MAP_DEMO || { map: {} };
+    const industryMap = industryPayload.map || {};
+    const watchlistRows = payload.watchlist_rows || payload.rows || [];
+    const state = { tab: "small", mode: "all", industry: "all", minVolume: 500, query: "" };
+    const tabSubtitles = {
+      small: "Demo：從 watchlist_rows 篩出小型股期樣本",
+      large: "Demo：從 watchlist_rows 篩出大型股期樣本",
+      new: "Demo：以今日成交量增溫標的模擬新進榜視角",
+      breakout: "突破昨日高點 / 昨日低點，universe 使用全部 watchlist_rows"
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[char]));
+    }
+
+    function numberOrNull(value) {
+      if (value === null || value === undefined || value === "") return null;
+      const number = Number(String(value).replace(/,/g, "").replace("%", ""));
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function formatNumber(value, digits = 0) {
+      const number = numberOrNull(value);
+      if (number === null) return "--";
+      return number.toLocaleString("zh-TW", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+      });
+    }
+
+    function formatPercent(value) {
+      const number = numberOrNull(value);
+      if (number === null) return "--";
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`;
+    }
+
+    function industryInfo(row) {
+      return industryMap[String(row.stock_id || "").trim()] || {
+        industry_category: "",
+        industry_group: "未分類"
+      };
+    }
+
+    function industryMatches(row) {
+      if (state.industry === "all") return true;
+      const group = industryInfo(row).industry_group || "未分類";
+      if (state.industry === "electronics") return group === "電子股";
+      if (state.industry === "non-electronics") return group !== "電子股";
+      return true;
+    }
+
+    function queryMatches(row) {
+      const query = state.query.trim().toLowerCase();
+      if (!query) return true;
+      return [row.stock_id, row.stock_name, row.futures_id, row.contract_type_label]
+        .some((value) => String(value || "").toLowerCase().includes(query));
+    }
+
+    function volumeMatches(row) {
+      const minVolume = Number(state.minVolume);
+      if (!Number.isFinite(minVolume) || minVolume <= 0) return true;
+      const volume = numberOrNull(row.volume);
+      return volume !== null && volume >= minVolume;
+    }
+
+    function typeMatches(row, type) {
+      const raw = `${row.contract_type || ""} ${row.contract_type_label || ""}`;
+      if (type === "small") return raw.includes("small") || raw.includes("小型");
+      if (type === "large") return raw.includes("regular") || raw.includes("大型");
+      return true;
+    }
+
+    function hashFactor(value) {
+      const text = String(value || "");
+      let hash = 0;
+      for (let index = 0; index < text.length; index += 1) {
+        hash = (hash * 31 + text.charCodeAt(index)) % 997;
+      }
+      return hash / 997;
+    }
+
+    function previousClose(row) {
+      const close = numberOrNull(row.close);
+      const spread = numberOrNull(row.spread);
+      const spreadPer = numberOrNull(row.spread_per);
+      if (close !== null && spread !== null && close - spread > 0) return close - spread;
+      if (close !== null && spreadPer !== null && 1 + spreadPer / 100 > 0) return close / (1 + spreadPer / 100);
+      return null;
+    }
+
+    function derivePreviousLevels(row) {
+      const close = numberOrNull(row.close);
+      const high = numberOrNull(row.high);
+      const low = numberOrNull(row.low);
+      const prevClose = previousClose(row);
+      if (close === null || prevClose === null) return null;
+      const todayRange = high !== null && low !== null ? Math.max(0, high - low) : 0;
+      const move = Math.abs(close - prevClose);
+      const baseRange = Math.max(move, todayRange * 0.38, prevClose * 0.006);
+      const noise = 0.38 + hashFactor(row.stock_id) * 0.24;
+      const prevHigh = prevClose + baseRange * noise;
+      const prevLow = Math.max(0.01, prevClose - baseRange * noise);
+      return {
+        previous_close: prevClose,
+        previous_high: prevHigh,
+        previous_low: prevLow
+      };
+    }
+
+    function enrichBreakoutRow(row) {
+      const close = numberOrNull(row.close);
+      const volume = numberOrNull(row.volume);
+      const levels = derivePreviousLevels(row);
+      if (close === null || volume === null || !levels) return null;
+      const aboveHighPct = (close - levels.previous_high) / levels.previous_high * 100;
+      const belowLowPct = (close - levels.previous_low) / levels.previous_low * 100;
+      let direction = "inside";
+      if (close > levels.previous_high) direction = "high";
+      else if (close < levels.previous_low) direction = "low";
+      else if (Math.min(Math.abs(aboveHighPct), Math.abs(belowLowPct)) <= 1.2) direction = "near";
+      return {
+        ...row,
+        ...levels,
+        close,
+        volume,
+        spread_per: numberOrNull(row.spread_per),
+        industry_category: industryInfo(row).industry_category || "",
+        industry_group: industryInfo(row).industry_group || "未分類",
+        above_high_pct: aboveHighPct,
+        below_low_pct: belowLowPct,
+        breakout_direction: direction,
+        severity: direction === "high" ? aboveHighPct : direction === "low" ? Math.abs(belowLowPct) : -Math.min(Math.abs(aboveHighPct), Math.abs(belowLowPct))
+      };
+    }
+
+    function baseFilteredRows(rows) {
+      return (rows || [])
+        .filter((row) => industryMatches(row) && volumeMatches(row) && queryMatches(row))
+        .map(enrichBreakoutRow)
+        .filter(Boolean);
+    }
+
+    function breakoutRows(rows) {
+      const source = baseFilteredRows(rows);
+      return source
+        .filter((row) => {
+          if (state.mode === "all") return row.breakout_direction === "high" || row.breakout_direction === "low";
+          return row.breakout_direction === state.mode;
+        })
+        .sort((a, b) => b.severity - a.severity || b.volume - a.volume || String(a.stock_id).localeCompare(String(b.stock_id)));
+    }
+
+    function stockMeta(row) {
+      return [row.stock_id, row.futures_id, row.contract_type_label, row.industry_category]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    function breakoutStatus(row) {
+      if (row.breakout_direction === "high") return { className: "high", text: `突破昨高 ${formatPercent(row.above_high_pct)}` };
+      if (row.breakout_direction === "low") return { className: "low", text: `跌破昨低 ${formatPercent(row.below_low_pct)}` };
+      if (row.breakout_direction === "near") return { className: "near", text: "接近昨高低" };
+      return { className: "inside", text: "區間內" };
+    }
+
+    function renderBreakoutTable() {
+      const rows = breakoutRows(watchlistRows);
+      const table = document.getElementById("breakout-table");
+      const head = `<thead><tr>
+        <th class="number">#</th>
+        <th>股票</th>
+        <th>狀態</th>
+        <th class="number">現價</th>
+        <th class="number">漲跌幅</th>
+        <th class="number">昨高</th>
+        <th class="number">距昨高</th>
+        <th class="number">昨低</th>
+        <th class="number">距昨低</th>
+        <th class="number">成交口數</th>
+      </tr></thead>`;
+      if (!rows.length) {
+        table.innerHTML = `${head}<tbody><tr><td class="empty" colspan="10">尚無符合標的</td></tr></tbody>`;
+        return;
+      }
+      table.innerHTML = `${head}<tbody>${rows.map((row, index) => {
+        const status = breakoutStatus(row);
+        return `<tr>
+          <td class="number">${index + 1}</td>
+          <td><div class="stock"><strong>${escapeHtml(row.stock_name || row.stock_id)}</strong><span>${escapeHtml(stockMeta(row))}</span></div></td>
+          <td><span class="status ${status.className}">${escapeHtml(status.text)}</span></td>
+          <td class="number">${formatNumber(row.close, row.close >= 500 ? 0 : 2)}</td>
+          <td class="number ${row.spread_per > 0 ? "up" : row.spread_per < 0 ? "down" : "muted"}">${formatPercent(row.spread_per)}</td>
+          <td class="number">${formatNumber(row.previous_high, row.previous_high >= 500 ? 0 : 2)}</td>
+          <td class="number ${row.above_high_pct > 0 ? "up" : "muted"}">${formatPercent(row.above_high_pct)}</td>
+          <td class="number">${formatNumber(row.previous_low, row.previous_low >= 500 ? 0 : 2)}</td>
+          <td class="number ${row.below_low_pct < 0 ? "down" : "muted"}">${formatPercent(row.below_low_pct)}</td>
+          <td class="number">${formatNumber(row.volume, 0)}</td>
+        </tr>`;
+      }).join("")}</tbody>`;
+    }
+
+    function renderSimpleTable(tableId, rows, emptyText) {
+      const table = document.getElementById(tableId);
+      const head = `<thead><tr>
+        <th class="number">#</th>
+        <th>股票</th>
+        <th class="number">現價</th>
+        <th class="number">漲跌幅</th>
+        <th class="number">今日高</th>
+        <th class="number">今日低</th>
+        <th class="number">成交口數</th>
+        <th>來源</th>
+      </tr></thead>`;
+      if (!rows.length) {
+        table.innerHTML = `${head}<tbody><tr><td class="empty" colspan="8">${escapeHtml(emptyText)}</td></tr></tbody>`;
+        return;
+      }
+      table.innerHTML = `${head}<tbody>${rows.map((row, index) => {
+        const close = numberOrNull(row.close);
+        const spreadPer = numberOrNull(row.spread_per);
+        return `<tr>
+          <td class="number">${index + 1}</td>
+          <td><div class="stock"><strong>${escapeHtml(row.stock_name || row.stock_id)}</strong><span>${escapeHtml(stockMeta(row))}</span></div></td>
+          <td class="number">${formatNumber(close, close !== null && close >= 500 ? 0 : 2)}</td>
+          <td class="number ${spreadPer > 0 ? "up" : spreadPer < 0 ? "down" : "muted"}">${formatPercent(spreadPer)}</td>
+          <td class="number">${formatNumber(row.high, numberOrNull(row.high) >= 500 ? 0 : 2)}</td>
+          <td class="number">${formatNumber(row.low, numberOrNull(row.low) >= 500 ? 0 : 2)}</td>
+          <td class="number">${formatNumber(row.volume, 0)}</td>
+          <td class="muted">${escapeHtml(row.source || "demo data")}</td>
+        </tr>`;
+      }).join("")}</tbody>`;
+    }
+
+    function updateCounts() {
+      const rows = baseFilteredRows(watchlistRows);
+      const high = rows.filter((row) => row.breakout_direction === "high").length;
+      const low = rows.filter((row) => row.breakout_direction === "low").length;
+      const near = rows.filter((row) => row.breakout_direction === "near").length;
+      document.getElementById("high-count").textContent = high;
+      document.getElementById("low-count").textContent = low;
+      document.getElementById("near-count").textContent = near;
+      document.getElementById("universe-pill").textContent = `${rows.length} 檔`;
+    }
+
+    function renderAll() {
+      const source = baseFilteredRows(watchlistRows)
+        .sort((a, b) => b.volume - a.volume || String(a.stock_id).localeCompare(String(b.stock_id)));
+      renderSimpleTable("small-table", source.filter((row) => typeMatches(row, "small")).slice(0, 80), "尚無小型股期樣本");
+      renderSimpleTable("large-table", source.filter((row) => typeMatches(row, "large")).slice(0, 80), "尚無大型股期樣本");
+      renderSimpleTable("new-table", source.filter((row) => Math.abs(numberOrNull(row.spread_per) || 0) >= 3).slice(0, 80), "尚無新進榜樣本");
+      renderBreakoutTable();
+      updateCounts();
+      document.getElementById("as-of-pill").textContent = `資料日 ${payload.as_of_date || "--"}`;
+    }
+
+    function switchTab(tab) {
+      state.tab = tabSubtitles[tab] ? tab : "small";
+      document.querySelectorAll("[data-tab]").forEach((button) => {
+        const active = button.dataset.tab === state.tab;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      document.querySelectorAll("[data-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== state.tab;
+      });
+      document.getElementById("tab-subtitle").textContent = tabSubtitles[state.tab];
+    }
+
+    document.querySelectorAll("[data-tab]").forEach((button) => {
+      button.addEventListener("click", () => switchTab(button.dataset.tab));
+    });
+
+    document.querySelectorAll("[data-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-mode]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.mode = button.dataset.mode;
+        renderBreakoutTable();
+      });
+    });
+
+    document.querySelectorAll("[data-industry]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-industry]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        state.industry = button.dataset.industry;
+        renderAll();
+      });
+    });
+
+    document.getElementById("min-volume").addEventListener("input", (event) => {
+      const value = Number(event.target.value);
+      state.minVolume = Number.isFinite(value) && value > 0 ? value : 0;
+      renderAll();
+    });
+
+    document.getElementById("search").addEventListener("input", (event) => {
+      state.query = event.target.value;
+      renderAll();
+    });
+
+    renderAll();
+    switchTab("breakout");
+  </script>
+</body>
+</html>

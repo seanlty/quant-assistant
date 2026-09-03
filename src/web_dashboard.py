@@ -59,7 +59,27 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_CRITERIA = StockPoolCriteria()
 MIN_ATR_PERCENT_OPTIONS = tuple(value / 10 for value in range(20, 51, 5))
 TODAY_OVERVIEW_TOP_N = 50
-DASHBOARD_CACHE_SCHEMA_VERSION = 5
+DASHBOARD_CACHE_SCHEMA_VERSION = 6
+WATCHLIST_BREAKOUT_FIELDS = (
+    "previous_date",
+    "previous_high",
+    "previous_low",
+    "previous_close",
+    "distance_to_previous_high_percent",
+    "distance_to_previous_low_percent",
+    "breakout_direction",
+    "breakout_label",
+)
+WATCHLIST_BREAKOUT_DEFAULTS = {
+    "previous_date": "",
+    "previous_high": None,
+    "previous_low": None,
+    "previous_close": None,
+    "distance_to_previous_high_percent": None,
+    "distance_to_previous_low_percent": None,
+    "breakout_direction": "",
+    "breakout_label": "資料不足",
+}
 CACHE_KIND_FINAL = "final"
 CACHE_KIND_INTRADAY = "intraday"
 INTRADAY_OPEN_MINUTES = 8 * 60 + 45
@@ -321,11 +341,15 @@ def is_snapshot_cache_compatible(snapshot: DashboardSnapshot) -> bool:
             return False
     if any("industry_category" not in row or "industry_group" not in row for row in snapshot.watchlist_rows):
         return False
+    if any(any(field not in row for field in WATCHLIST_BREAKOUT_FIELDS) for row in snapshot.watchlist_rows):
+        return False
     if snapshot.watchlist_rows and snapshot.source.get("industry_map_source") == "unavailable":
         return False
     if snapshot.source.get("cache_schema_version") != DASHBOARD_CACHE_SCHEMA_VERSION:
         return False
     if snapshot.source.get("rank_sequence_fallback"):
+        return False
+    if snapshot.source.get("breakout_levels_fallback"):
         return False
     for field in ("snapshot_stage", "final_ready", "final_readiness_reason"):
         if field not in snapshot.source:
@@ -337,14 +361,21 @@ def migrate_cached_snapshot(snapshot: DashboardSnapshot) -> DashboardSnapshot:
     if is_snapshot_cache_compatible(snapshot):
         return snapshot
     payload = asdict(snapshot)
+    source = payload.get("source") or {}
+    previous_schema_version = source.get("cache_schema_version")
     spread_by_product = {}
     rank_sequence_fallback = False
+    breakout_levels_fallback = previous_schema_version != DASHBOARD_CACHE_SCHEMA_VERSION
     for row in payload.get("watchlist_rows", []):
         spread = row.get("spread")
         for key_name in ("finmind_futures_id", "futures_id"):
             key = _string_value(row.get(key_name)).strip()
             if key:
                 spread_by_product[key] = spread
+        for field, default_value in WATCHLIST_BREAKOUT_DEFAULTS.items():
+            if field not in row:
+                row[field] = default_value
+                breakout_levels_fallback = True
 
     for rows_key in ("rows", "active_rows"):
         for row in payload.get(rows_key, []):
@@ -362,7 +393,6 @@ def migrate_cached_snapshot(snapshot: DashboardSnapshot) -> DashboardSnapshot:
                 row["volume_rank_5d"] = _fallback_rank_sequence_from_bounds(row)
                 rank_sequence_fallback = True
 
-    source = payload.get("source") or {}
     if "snapshot_stage" not in source:
         if source.get("realtime_quote_enabled"):
             source["snapshot_stage"] = "intraday"
@@ -381,6 +411,10 @@ def migrate_cached_snapshot(snapshot: DashboardSnapshot) -> DashboardSnapshot:
         source["rank_sequence_fallback"] = True
     else:
         source.pop("rank_sequence_fallback", None)
+    if breakout_levels_fallback:
+        source["breakout_levels_fallback"] = True
+    else:
+        source.pop("breakout_levels_fallback", None)
     payload["source"] = source
     return DashboardSnapshot(**payload)
 
@@ -792,6 +826,7 @@ def build_daily_pool_snapshot(
     industry_payload = load_stock_industry_map(token=token, timeout=timeout)
     industry_map = industry_payload.get("map") if isinstance(industry_payload.get("map"), dict) else {}
     watchlist_rows = enrich_watchlist_records_with_industry(watchlist_rows, industry_map)
+    watchlist_rows = enrich_watchlist_records_with_previous_levels(watchlist_rows, futures_history)
     industry_group_counts = _industry_group_counts(watchlist_rows)
     industry_fetch_error = _string_value(industry_payload.get("fetch_error")).strip()
     if len(industry_fetch_error) > 180:
@@ -2626,6 +2661,173 @@ def watchlist_to_records(watchlist: pd.DataFrame) -> List[Dict[str, object]]:
     return records
 
 
+def enrich_watchlist_records_with_previous_levels(
+    watchlist_rows: List[Dict[str, object]],
+    futures_history: pd.DataFrame,
+) -> List[Dict[str, object]]:
+    enriched_rows = [dict(row) for row in watchlist_rows]
+    for row in enriched_rows:
+        row.update(WATCHLIST_BREAKOUT_DEFAULTS)
+    if not enriched_rows or futures_history.empty:
+        return enriched_rows
+    if "date" not in futures_history.columns or "stock_id" not in futures_history.columns:
+        return enriched_rows
+
+    history = futures_history.copy()
+    history["date"] = pd.to_datetime(history["date"], errors="coerce").dt.normalize()
+    history = history.dropna(subset=["date"]).copy()
+    if history.empty:
+        return enriched_rows
+    history["stock_id"] = history["stock_id"].astype(str).str.strip()
+    for column in ("max", "min", "close", "Trading_Volume"):
+        if column not in history.columns:
+            history[column] = pd.NA
+        history[column] = pd.to_numeric(history[column], errors="coerce")
+
+    history_dates = sorted(pd.Timestamp(value).normalize() for value in history["date"].dropna().unique())
+    if len(history_dates) < 2:
+        return enriched_rows
+
+    previous_rows_by_reference: Dict[pd.Timestamp, Tuple[pd.Timestamp, pd.DataFrame]] = {}
+    default_reference_date = max(
+        [_timestamp_or_none(row.get("date")) for row in enriched_rows if _timestamp_or_none(row.get("date")) is not None],
+        default=history_dates[-1],
+    )
+
+    for row in enriched_rows:
+        reference_date = _timestamp_or_none(row.get("date")) or default_reference_date
+        previous_date = _previous_trading_date(history_dates, reference_date)
+        if previous_date is None:
+            continue
+        if reference_date not in previous_rows_by_reference:
+            previous_rows_by_reference[reference_date] = (
+                previous_date,
+                history[history["date"] == previous_date].copy(),
+            )
+        selected_previous = _select_previous_level_row(previous_rows_by_reference[reference_date][1], row)
+        if selected_previous is None:
+            continue
+        _apply_previous_breakout_fields(row, previous_rows_by_reference[reference_date][0], selected_previous)
+    return enriched_rows
+
+
+def _timestamp_or_none(value: object) -> Optional[pd.Timestamp]:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(timestamp):
+        return None
+    return timestamp.normalize()
+
+
+def _previous_trading_date(history_dates: Sequence[pd.Timestamp], reference_date: pd.Timestamp) -> Optional[pd.Timestamp]:
+    for candidate in reversed(history_dates):
+        if candidate < reference_date:
+            return candidate
+    return None
+
+
+def _split_row_tokens(value: object) -> List[str]:
+    text = _string_value(value).strip()
+    if not text:
+        return []
+    for separator in ("，", "/", ";", "|"):
+        text = text.replace(separator, ",")
+    tokens = []
+    for token in text.split(","):
+        token = token.strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _watchlist_contract_types(row: Dict[str, object]) -> set:
+    contract_types = set()
+    for key in ("contract_type", "contract_type_label"):
+        for token in _split_row_tokens(row.get(key)):
+            normalized = token.lower()
+            if normalized in {"small", "s"} or token == "小型":
+                contract_types.add("small")
+            elif normalized in {"regular", "large", "l"} or token == "大型":
+                contract_types.add("regular")
+    return contract_types
+
+
+def _select_previous_level_row(previous_rows: pd.DataFrame, row: Dict[str, object]) -> Optional[pd.Series]:
+    stock_id = _string_value(row.get("stock_id")).strip()
+    if not stock_id or previous_rows.empty:
+        return None
+    candidates = previous_rows[previous_rows["stock_id"].astype(str).str.strip() == stock_id].copy()
+    if candidates.empty:
+        return None
+
+    product_mask = pd.Series(False, index=candidates.index)
+    for row_key, candidate_key in (("finmind_futures_id", "finmind_futures_id"), ("futures_id", "futures_id")):
+        tokens = set(_split_row_tokens(row.get(row_key)))
+        if tokens and candidate_key in candidates.columns:
+            product_mask = product_mask | candidates[candidate_key].astype(str).str.strip().isin(tokens)
+    if product_mask.any():
+        candidates = candidates[product_mask].copy()
+
+    contract_types = _watchlist_contract_types(row)
+    if len(contract_types) == 1 and "contract_type" in candidates.columns:
+        type_mask = candidates["contract_type"].astype(str).str.strip().isin(contract_types)
+        if type_mask.any():
+            candidates = candidates[type_mask].copy()
+
+    candidates["_volume_sort"] = pd.to_numeric(candidates.get("Trading_Volume"), errors="coerce").fillna(0)
+    candidates["_contract_sort"] = candidates.get("contract_date", pd.Series("", index=candidates.index)).astype(str)
+    candidates["_futures_sort"] = candidates.get("finmind_futures_id", pd.Series("", index=candidates.index)).astype(str)
+    selected = candidates.sort_values(
+        ["_volume_sort", "_contract_sort", "_futures_sort"],
+        ascending=[False, True, True],
+    ).iloc[0]
+    return selected
+
+
+def _apply_previous_breakout_fields(
+    row: Dict[str, object],
+    previous_date: pd.Timestamp,
+    previous_row: pd.Series,
+) -> None:
+    previous_high = _numeric_value(previous_row.get("max"))
+    previous_low = _numeric_value(previous_row.get("min"))
+    previous_close = _numeric_value(previous_row.get("close"))
+    latest_price = _numeric_value(row.get("close"))
+
+    row["previous_date"] = previous_date.strftime("%Y-%m-%d")
+    row["previous_high"] = _optional_round_value(previous_high, 2)
+    row["previous_low"] = _optional_round_value(previous_low, 2)
+    row["previous_close"] = _optional_round_value(previous_close, 2)
+
+    distance_to_high = _percent_distance(latest_price, previous_high)
+    distance_to_low = _percent_distance(latest_price, previous_low)
+    row["distance_to_previous_high_percent"] = _optional_round_value(distance_to_high, 2)
+    row["distance_to_previous_low_percent"] = _optional_round_value(distance_to_low, 2)
+
+    if latest_price is None or previous_high is None or previous_low is None:
+        row["breakout_direction"] = ""
+        row["breakout_label"] = "資料不足"
+    elif latest_price > previous_high:
+        row["breakout_direction"] = "up"
+        row["breakout_label"] = "突破昨高"
+    elif latest_price < previous_low:
+        row["breakout_direction"] = "down"
+        row["breakout_label"] = "跌破昨低"
+    else:
+        row["breakout_direction"] = ""
+        row["breakout_label"] = "區間內"
+
+
+def _percent_distance(current_value: Optional[float], reference_value: Optional[float]) -> Optional[float]:
+    if current_value is None or reference_value is None or reference_value == 0:
+        return None
+    return (current_value - reference_value) / reference_value * 100
+
+
 def criteria_to_dict(criteria: StockPoolCriteria) -> Dict[str, object]:
     return {
         "volume_days": criteria.volume_days,
@@ -2700,6 +2902,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
     rows_html = _render_table_rows(snapshot.rows)
     active_rows_html = _render_table_rows(snapshot.active_rows)
     new_entry_html = _render_new_entry_rows(snapshot.new_entry_rows)
+    breakout_html = _render_breakout_rows(snapshot.watchlist_rows)
     watchlist_html = _render_watchlist_rows(snapshot.watchlist_rows)
     today_overview_html = _render_today_overview_chart(snapshot.watchlist_rows)
     status_text = "同步完成" if snapshot.rows or snapshot.active_rows or snapshot.new_entry_rows or snapshot.watchlist_rows else "無符合標的"
@@ -3605,6 +3808,28 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       background: #f1f5f9;
       color: #64748b;
     }}
+    .breakout-status {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 68px;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #f1f5f9;
+      color: #64748b;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }}
+    .breakout-status.is-up {{
+      background: #ffe5e0;
+      color: #b91c1c;
+    }}
+    .breakout-status.is-down {{
+      background: #dcf8ea;
+      color: #047857;
+    }}
     .volume-bar {{
       grid-column: 1 / -1;
       height: 5px;
@@ -3839,6 +4064,9 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
     #new-entry-table-wrap td {{
       padding-top: 9.6px;
       padding-bottom: 9.6px;
+    }}
+    #breakout-table-wrap table {{
+      min-width: 980px;
     }}
     .th-help {{
       display: inline-flex;
@@ -4142,6 +4370,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
           <button class="pool-tab is-active" id="pool-tab-small" type="button" role="tab" aria-selected="true" aria-controls="pool-panel-small" data-pool-tab="small">小型股期</button>
           <button class="pool-tab" id="pool-tab-large" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-large" data-pool-tab="large">大型股期</button>
           <button class="pool-tab" id="pool-tab-new" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-new" data-pool-tab="new">新進榜</button>
+          <button class="pool-tab" id="pool-tab-breakout" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-breakout" data-pool-tab="breakout">昨高低突破</button>
         </div>
       </div>
       <div class="pool-tab-panel" id="pool-panel-small" role="tabpanel" aria-labelledby="pool-tab-small" data-pool-panel="small">
@@ -4162,6 +4391,13 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
         <div class="scroll-frame">
           <section class="table-wrap" id="new-entry-table-wrap" aria-label="新進榜列表">
             {new_entry_content}
+          </section>
+        </div>
+      </div>
+      <div class="pool-tab-panel" id="pool-panel-breakout" role="tabpanel" aria-labelledby="pool-tab-breakout" data-pool-panel="breakout" hidden>
+        <div class="scroll-frame">
+          <section class="table-wrap" id="breakout-table-wrap" aria-label="突破昨日高點或跌破昨日低點列表">
+            {breakout_content}
           </section>
         </div>
       </div>
@@ -4217,6 +4453,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
         table_content=rows_html,
         active_table_content=active_rows_html,
         new_entry_content=new_entry_html,
+        breakout_content=breakout_html,
         watchlist_content=watchlist_html,
         max_atr=max_atr,
     )
@@ -5545,6 +5782,105 @@ def _render_new_entry_rows(rows: List[Dict[str, object]]) -> str:
 </table>""".format(rows="\n".join(body_rows))
 
 
+def _breakout_display_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    breakout_rows = [
+        row
+        for row in rows
+        if _string_value(row.get("breakout_direction")).strip() in {"up", "down"}
+    ]
+    return sorted(
+        breakout_rows,
+        key=lambda row: (_breakout_magnitude(row), _numeric_value(row.get("volume")) or 0),
+        reverse=True,
+    )
+
+
+def _breakout_magnitude(row: Dict[str, object]) -> float:
+    direction = _string_value(row.get("breakout_direction")).strip()
+    if direction == "up":
+        value = _float_or_none(row.get("distance_to_previous_high_percent"))
+    elif direction == "down":
+        value = _float_or_none(row.get("distance_to_previous_low_percent"))
+    else:
+        value = None
+    return abs(value) if value is not None else -1.0
+
+
+def _render_breakout_status(row: Dict[str, object]) -> str:
+    direction = _string_value(row.get("breakout_direction")).strip()
+    label = _string_value(row.get("breakout_label")).strip() or "區間內"
+    if direction == "up":
+        class_name = "breakout-status is-up"
+    elif direction == "down":
+        class_name = "breakout-status is-down"
+    else:
+        class_name = "breakout-status is-inside"
+    return '<span class="{class_name}">{label}</span>'.format(class_name=class_name, label=escape(label))
+
+
+def _render_breakout_rows(rows: List[Dict[str, object]]) -> str:
+    body_rows = []
+    for index, row in enumerate(_breakout_display_rows(rows), start=1):
+        spread_per = row.get("spread_per")
+        distance_to_high = row.get("distance_to_previous_high_percent")
+        distance_to_low = row.get("distance_to_previous_low_percent")
+        body_rows.append(
+            """<tr>
+  <td class="number">{rank}</td>
+  <td><div class="stock"><strong>{stock_name}</strong><span>{stock_meta}</span></div></td>
+  <td>{status}</td>
+  <td class="number">{close}</td>
+  <td class="number {spread_per_class}">{spread_per}</td>
+  <td class="number">{previous_high}</td>
+  <td class="number {distance_to_high_class}">{distance_to_high}</td>
+  <td class="number">{previous_low}</td>
+  <td class="number {distance_to_low_class}">{distance_to_low}</td>
+  <td class="number">{volume}</td>
+  <td>{contract_type_label}</td>
+</tr>""".format(
+                rank=index,
+                stock_name=escape(str(row.get("stock_name") or "-")),
+                stock_meta=escape(_display_stock_meta(row)),
+                status=_render_breakout_status(row),
+                close=_format_optional_number(row.get("close"), 2),
+                spread_per=_format_optional_percent(spread_per, 2),
+                spread_per_class=_change_class(spread_per),
+                previous_high=_format_optional_number(row.get("previous_high"), 2),
+                distance_to_high=_format_optional_percent(distance_to_high, 2),
+                distance_to_high_class=_change_class(distance_to_high),
+                previous_low=_format_optional_number(row.get("previous_low"), 2),
+                distance_to_low=_format_optional_percent(distance_to_low, 2),
+                distance_to_low_class=_change_class(distance_to_low),
+                volume=_format_optional_number(row.get("volume"), 0),
+                contract_type_label=escape(str(row.get("contract_type_label") or "-")),
+            )
+        )
+
+    if not body_rows:
+        body_rows.append('<tr><td class="empty-row" colspan="11">尚無突破昨日高點或低點的標的</td></tr>')
+
+    return """<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>股票</th>
+      <th>狀態</th>
+      <th>現價</th>
+      <th>漲跌幅%</th>
+      <th>昨高</th>
+      <th>距昨高</th>
+      <th>昨低</th>
+      <th>距昨低</th>
+      <th>成交口數</th>
+      <th>類型</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows}
+  </tbody>
+</table>""".format(rows="\n".join(body_rows))
+
+
 def _render_watchlist_rows(rows: List[Dict[str, object]]) -> str:
     body_rows = []
     for index, row in enumerate(rows, start=1):
@@ -5834,6 +6170,22 @@ def _dashboard_script() -> str:
         <th>合約月份</th>
       </tr>
     </thead>`;
+  const breakoutTableHead = `
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>股票</th>
+        <th>狀態</th>
+        <th>現價</th>
+        <th>漲跌幅%</th>
+        <th>昨高</th>
+        <th>距昨高</th>
+        <th>昨低</th>
+        <th>距昨低</th>
+        <th>成交口數</th>
+        <th>類型</th>
+      </tr>
+    </thead>`;
   const watchlistTableHead = `
     <thead>
       <tr>
@@ -5855,12 +6207,14 @@ def _dashboard_script() -> str:
     pool: new Map(),
     activePool: new Map(),
     newEntry: new Map(),
+    breakout: new Map(),
     watchlist: new Map()
   };
   const poolTabSubtitles = {
     small: "小型股票期貨，價格 500~5000，流動與波動同時達標",
     large: "大型股票期貨，價格 200 以下，口數與 ATR 條件達標",
-    new: "前一交易日 50 名外，最新交易日進入口數 Top 50"
+    new: "前一交易日 50 名外，最新交易日進入口數 Top 50",
+    breakout: "用全部 watchlist 追蹤當下突破昨日高點或跌破昨日低點"
   };
   const watchlistTabSubtitles = {
     all: "全部股票期貨產品，即時報價一律取近月契約",
@@ -7401,6 +7755,88 @@ def _dashboard_script() -> str:
     return { html, signatures };
   }
 
+  function breakoutDirection(row) {
+    return String(row && row.breakout_direction || "").trim();
+  }
+
+  function breakoutMagnitude(row) {
+    const direction = breakoutDirection(row);
+    const value = direction === "up"
+      ? numberOrNull(row.distance_to_previous_high_percent)
+      : direction === "down"
+        ? numberOrNull(row.distance_to_previous_low_percent)
+        : null;
+    return value === null ? -1 : Math.abs(value);
+  }
+
+  function breakoutDisplayRows(rows) {
+    return (rows || [])
+      .filter((row) => {
+        const direction = breakoutDirection(row);
+        return direction === "up" || direction === "down";
+      })
+      .slice()
+      .sort((a, b) => {
+        const magnitudeDiff = breakoutMagnitude(b) - breakoutMagnitude(a);
+        if (magnitudeDiff) return magnitudeDiff;
+        const volumeDiff = (numberOrNull(b.volume) || 0) - (numberOrNull(a.volume) || 0);
+        if (volumeDiff) return volumeDiff;
+        return String(a.stock_id || "").localeCompare(String(b.stock_id || ""), "zh-Hant");
+      });
+  }
+
+  function renderBreakoutStatus(row) {
+    const direction = breakoutDirection(row);
+    const label = row.breakout_label || (direction === "up" ? "突破昨高" : direction === "down" ? "跌破昨低" : "區間內");
+    const className = direction === "up"
+      ? "breakout-status is-up"
+      : direction === "down"
+        ? "breakout-status is-down"
+        : "breakout-status is-inside";
+    return `<span class="${className}">${escapeHtml(label)}</span>`;
+  }
+
+  function renderBreakoutRows(rows) {
+    const displayRows = breakoutDisplayRows(rows);
+    if (!displayRows.length) {
+      return emptyRender('<tr><td class="empty-row" colspan="11">尚無突破昨日高點或低點的標的</td></tr>');
+    }
+    const signatures = new Map();
+    const html = displayRows.map((row, index) => {
+      const spreadPerClass = changeClass(row.spread_per);
+      const distanceToHighClass = changeClass(row.distance_to_previous_high_percent);
+      const distanceToLowClass = changeClass(row.distance_to_previous_low_percent);
+      const key = rowKey(row);
+      const signature = rowSignature([
+        index + 1,
+        row.breakout_direction,
+        row.close,
+        row.spread_per,
+        row.previous_date,
+        row.previous_high,
+        row.previous_low,
+        row.distance_to_previous_high_percent,
+        row.distance_to_previous_low_percent,
+        row.volume
+      ]);
+      signatures.set(key, signature);
+      return `<tr${rowAttributes("breakout", key, signature)}>
+        <td class="number">${index + 1}</td>
+        <td><div class="stock"><strong>${escapeHtml(row.stock_name || "-")}</strong><span>${escapeHtml(stockMeta(row))}</span></div></td>
+        <td>${renderBreakoutStatus(row)}</td>
+        <td class="number">${formatNumber(row.close, 2)}</td>
+        <td class="number ${spreadPerClass}">${formatPercentValue(row.spread_per)}</td>
+        <td class="number">${formatNumber(row.previous_high, 2)}</td>
+        <td class="number ${distanceToHighClass}">${formatPercentValue(row.distance_to_previous_high_percent)}</td>
+        <td class="number">${formatNumber(row.previous_low, 2)}</td>
+        <td class="number ${distanceToLowClass}">${formatPercentValue(row.distance_to_previous_low_percent)}</td>
+        <td class="number">${formatNumber(row.volume, 0)}</td>
+        <td>${escapeHtml(row.contract_type_label || "-")}</td>
+      </tr>`;
+    }).join("");
+    return { html, signatures };
+  }
+
   function renderWatchlistRows(rows) {
     if (!rows.length) {
       return emptyRender('<tr><td class="empty-row" colspan="12">尚無股票期貨 watchlist 資料</td></tr>');
@@ -7455,6 +7891,11 @@ def _dashboard_script() -> str:
     renderTable("newEntry", "new-entry-table-wrap", newEntryTableHead, rendered.html, rendered.signatures);
   }
 
+  function renderBreakoutTable(rows) {
+    const rendered = renderBreakoutRows(rows);
+    renderTable("breakout", "breakout-table-wrap", breakoutTableHead, rendered.html, rendered.signatures);
+  }
+
   function renderWatchlistTable(rows) {
     currentWatchlistRows = rows || [];
     const rendered = renderWatchlistRows(filterWatchlistRows(currentWatchlistRows, currentWatchlistTab));
@@ -7481,6 +7922,13 @@ def _dashboard_script() -> str:
       "new-entry-table-wrap",
       newEntryTableHead,
       `<tr><td class="empty-row" colspan="9">${escapeHtml(message)}</td></tr>`,
+      new Map()
+    );
+    renderTable(
+      "breakout",
+      "breakout-table-wrap",
+      breakoutTableHead,
+      `<tr><td class="empty-row" colspan="11">${escapeHtml(message)}</td></tr>`,
       new Map()
     );
     renderTable(
@@ -7544,6 +7992,7 @@ def _dashboard_script() -> str:
       renderPoolTable(payload.rows || []);
       renderActivePoolTable(payload.active_rows || []);
       renderNewEntryTable(payload.new_entry_rows || []);
+      renderBreakoutTable(payload.watchlist_rows || []);
       renderWatchlistTable(payload.watchlist_rows || []);
       renderTodayOverviewChart(payload.watchlist_rows || []);
       renderButterflyChart(payload.watchlist_rows || []);
