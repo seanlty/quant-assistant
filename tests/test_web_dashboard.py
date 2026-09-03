@@ -54,6 +54,7 @@ from src.web_dashboard import (
     watchlist_to_records,
     _render_today_overview_chart,
     _today_overview_rows,
+    _breakout_display_rows,
 )
 
 
@@ -1931,6 +1932,40 @@ def test_watchlist_previous_levels_mark_high_and_low_breakouts():
     assert enriched[1]["breakout_label"] == "跌破昨低"
 
 
+def test_breakout_display_rows_split_direction_and_limit_top_20():
+    rows = []
+    for index in range(25):
+        rows.append(
+            {
+                "stock_id": f"UP{index:02d}",
+                "volume": 1000 + index,
+                "breakout_direction": "up",
+                "distance_to_previous_high_percent": index + 1,
+                "distance_to_previous_low_percent": index + 5,
+            }
+        )
+    for index in range(25):
+        rows.append(
+            {
+                "stock_id": f"DN{index:02d}",
+                "volume": 800 + index,
+                "breakout_direction": "down",
+                "distance_to_previous_high_percent": -index,
+                "distance_to_previous_low_percent": -(index + 1),
+            }
+        )
+
+    up_rows = _breakout_display_rows(rows, "up")
+    down_rows = _breakout_display_rows(rows, "down", min_volume=810)
+
+    assert len(up_rows) == 20
+    assert up_rows[0]["stock_id"] == "UP24"
+    assert up_rows[-1]["stock_id"] == "UP05"
+    assert len(down_rows) == 15
+    assert down_rows[0]["stock_id"] == "DN24"
+    assert all(row["breakout_direction"] == "down" and row["volume"] >= 810 for row in down_rows)
+
+
 def test_fugle_quote_volume_overrides_same_day_history():
     stock_futures = pd.DataFrame(
         [
@@ -2369,7 +2404,7 @@ def test_render_dashboard_html_contains_daily_pool_table():
         row_count=1,
         active_row_count=1,
         new_entry_count=1,
-        watchlist_count=1,
+        watchlist_count=2,
         volume_window="2026-06-08~2026-06-12",
         atr_window="2026-05-16~2026-06-12",
         criteria={
@@ -2475,7 +2510,36 @@ def test_render_dashboard_html_contains_daily_pool_table():
                 "distance_to_previous_low_percent": 4.65,
                 "breakout_direction": "up",
                 "breakout_label": "突破昨高",
-            }
+            },
+            {
+                "date": "2026-06-12",
+                "stock_id": "2303",
+                "stock_name": "聯電",
+                "futures_id": "CC",
+                "finmind_futures_id": "CCF",
+                "contract_type": "regular",
+                "contract_type_label": "大型",
+                "contract_date": "202606",
+                "open": 56.0,
+                "high": 56.5,
+                "low": 54.8,
+                "close": 54.7,
+                "volume": 3210.0,
+                "open_interest": 1200.0,
+                "spread": -1.3,
+                "spread_per": -2.5,
+                "trading_session": "position",
+                "source": "TaiwanFuturesDaily",
+                "has_latest_trade": True,
+                "previous_date": "2026-06-11",
+                "previous_high": 58.0,
+                "previous_low": 55.0,
+                "previous_close": 56.1,
+                "distance_to_previous_high_percent": -5.69,
+                "distance_to_previous_low_percent": -0.55,
+                "breakout_direction": "down",
+                "breakout_label": "跌破昨低",
+            },
         ],
         source={"price_rows": 1200, "contract_rows": 300},
     )
@@ -2522,13 +2586,21 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert ".scroll-frame::after" in html
     assert "新進榜" in html
     assert "8299 / QNF" in html
-    assert "昨高低突破" in html
-    assert 'data-pool-tab="breakout"' in html
-    assert 'id="pool-panel-breakout"' in html
-    assert 'id="breakout-table-wrap"' in html
-    assert "突破昨日高點或跌破昨日低點" in html
+    assert "突破昨高" in html
+    assert "跌破昨低" in html
+    assert 'data-pool-tab="breakout-up"' in html
+    assert 'data-pool-tab="breakout-down"' in html
+    assert 'id="pool-panel-breakout-up"' in html
+    assert 'id="pool-panel-breakout-down"' in html
+    assert 'id="breakout-up-table-wrap"' in html
+    assert 'id="breakout-down-table-wrap"' in html
+    assert "突破昨日高點列表" in html
+    assert "跌破昨日低點列表" in html
+    assert 'id="breakout-min-volume"' in html
+    assert "突破成交口數 >=" in html
     assert "突破昨高" in html
     assert 'class="breakout-status is-up"' in html
+    assert 'class="breakout-status is-down"' in html
     assert "活潑股股期股池" not in html
     assert "高價股股期股池" not in html
     assert "股票期貨 Watchlist" in html
@@ -2577,10 +2649,12 @@ def test_render_dashboard_html_contains_daily_pool_table():
     assert 'data-pool-tab="small"' in html
     assert 'data-pool-tab="large"' in html
     assert 'data-pool-tab="new"' in html
-    assert 'data-pool-tab="breakout"' in html
+    assert 'data-pool-tab="breakout-up"' in html
+    assert 'data-pool-tab="breakout-down"' in html
     assert 'id="pool-panel-large"' in html
     assert 'id="pool-panel-new"' in html
-    assert 'id="pool-panel-breakout"' in html
+    assert 'id="pool-panel-breakout-up"' in html
+    assert 'id="pool-panel-breakout-down"' in html
     assert "<th>收盤價</th>\n      <th>漲跌幅%</th>\n      <th>ATR20%</th>" in html
     assert "<th>開盤累積" in html
     assert "aria-label=\"狀態說明\"" in html
@@ -2613,9 +2687,14 @@ def test_dashboard_shell_contains_realtime_ranking_script():
     assert "renderTodayOverviewChart(payload.watchlist_rows || [])" in html
     assert "renderButterflyChart" in html
     assert "renderButterflyChart(payload.watchlist_rows || [])" in html
-    assert "renderBreakoutTable(payload.watchlist_rows || [])" in html
+    assert "renderBreakoutTables(payload.watchlist_rows || [])" in html
     assert "breakoutDisplayRows" in html
     assert "breakoutTableHead" in html
+    assert "BREAKOUT_TOP_N = 20" in html
+    assert ".slice(0, BREAKOUT_TOP_N)" in html
+    assert "initBreakoutFilters" in html
+    assert "setBreakoutMinVolume" in html
+    assert 'id="breakout-min-volume"' in html
     assert "--bg: #ffffff;" in html
     assert 'applyTheme("light")' in html
     assert "scrollbar-color: var(--scrollbar-thumb) var(--panel)" in html

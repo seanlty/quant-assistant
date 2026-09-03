@@ -15,7 +15,7 @@ Web dashboard 的主線不是直接用股票現貨成交量，而是以股票期
    - `refresh=1`：要求略過既有快取重建。
 3. `DashboardCache.get_snapshot()` 決定使用記憶體快取、磁碟快取，或重新打外部 API。
 4. 若需要重建，`build_daily_pool_snapshot()` 會抓取 FinMind、Fugle、TAIFEX 資料並組成 `DashboardSnapshot`。
-5. 回傳 JSON 給前端，前端重畫股池、新進榜、昨高低突破、watchlist 與今日速覽。
+5. 回傳 JSON 給前端，前端重畫股池、新進榜、突破昨高、跌破昨低、watchlist 與今日速覽。
 
 ```mermaid
 flowchart TD
@@ -32,9 +32,9 @@ flowchart TD
   Fugle --> History
   Contracts --> History
   History --> Pools["strategy pools / new entries / latest quotes"]
-   Pools --> Breakout["watchlist 昨高低突破欄位"]
-   Breakout --> Snapshot
-   Snapshot --> API
+  Pools --> Breakout["watchlist 昨高低突破欄位"]
+  Breakout --> Snapshot
+  Snapshot --> API
 ```
 
 ## Snapshot 建立邏輯
@@ -58,7 +58,7 @@ flowchart TD
    - 大型活躍股期池：`contract_type == "regular"`，價格 0 到 200。
    - 新進榜：最新一日進入成交口數 Top N、前一交易日未在 Top N。
    - Watchlist：最新日每個標的的股期報價與成交口數。
-   - 昨高低突破：用 `watchlist_rows` 當 universe，比對前一交易日同股票主力股期的 `max/min`，在 row 內補 `previous_high`、`previous_low`、`distance_to_previous_high_percent`、`distance_to_previous_low_percent`、`breakout_direction`、`breakout_label`。
+   - 昨高低突破欄位：用 `watchlist_rows` 當 universe，比對前一交易日同股票主力股期的 `max/min`，在 row 內補 `previous_high`、`previous_low`、`distance_to_previous_high_percent`、`distance_to_previous_low_percent`、`breakout_direction`、`breakout_label`。前端精選股池分成「突破昨高」與「跌破昨低」兩個 tab，各自套成交口數下限並顯示前 20 名。
 9. 將結果包成 `DashboardSnapshot`，並在 `source` 寫入資料來源、Fugle 狀態、final readiness 與 cache schema。
 
 ## 篩選規則

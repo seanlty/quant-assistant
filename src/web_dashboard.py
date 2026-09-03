@@ -59,6 +59,7 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_CRITERIA = StockPoolCriteria()
 MIN_ATR_PERCENT_OPTIONS = tuple(value / 10 for value in range(20, 51, 5))
 TODAY_OVERVIEW_TOP_N = 50
+BREAKOUT_TAB_TOP_N = 20
 DASHBOARD_CACHE_SCHEMA_VERSION = 6
 WATCHLIST_BREAKOUT_FIELDS = (
     "previous_date",
@@ -2902,7 +2903,8 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
     rows_html = _render_table_rows(snapshot.rows)
     active_rows_html = _render_table_rows(snapshot.active_rows)
     new_entry_html = _render_new_entry_rows(snapshot.new_entry_rows)
-    breakout_html = _render_breakout_rows(snapshot.watchlist_rows)
+    breakout_up_html = _render_breakout_rows(snapshot.watchlist_rows, "up")
+    breakout_down_html = _render_breakout_rows(snapshot.watchlist_rows, "down")
     watchlist_html = _render_watchlist_rows(snapshot.watchlist_rows)
     today_overview_html = _render_today_overview_chart(snapshot.watchlist_rows)
     status_text = "同步完成" if snapshot.rows or snapshot.active_rows or snapshot.new_entry_rows or snapshot.watchlist_rows else "無符合標的"
@@ -4065,8 +4067,15 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       padding-top: 9.6px;
       padding-bottom: 9.6px;
     }}
-    #breakout-table-wrap table {{
+    #breakout-up-table-wrap table,
+    #breakout-down-table-wrap table {{
       min-width: 980px;
+    }}
+    .breakout-volume-filter {{
+      flex-shrink: 0;
+    }}
+    .breakout-volume-filter input {{
+      width: 96px;
     }}
     .th-help {{
       display: inline-flex;
@@ -4157,6 +4166,10 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
       .pool-tab-list {{
         width: 100%;
         overflow-x: auto;
+      }}
+      .breakout-volume-filter {{
+        width: 100%;
+        justify-content: space-between;
       }}
       .pool-tab-panel .table-wrap table {{ min-width: 900px; }}
     }}
@@ -4370,8 +4383,13 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
           <button class="pool-tab is-active" id="pool-tab-small" type="button" role="tab" aria-selected="true" aria-controls="pool-panel-small" data-pool-tab="small">小型股期</button>
           <button class="pool-tab" id="pool-tab-large" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-large" data-pool-tab="large">大型股期</button>
           <button class="pool-tab" id="pool-tab-new" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-new" data-pool-tab="new">新進榜</button>
-          <button class="pool-tab" id="pool-tab-breakout" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-breakout" data-pool-tab="breakout">昨高低突破</button>
+          <button class="pool-tab" id="pool-tab-breakout-up" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-breakout-up" data-pool-tab="breakout-up">突破昨高</button>
+          <button class="pool-tab" id="pool-tab-breakout-down" type="button" role="tab" aria-selected="false" aria-controls="pool-panel-breakout-down" data-pool-tab="breakout-down">跌破昨低</button>
         </div>
+        <label class="filter-control breakout-volume-filter" for="breakout-min-volume">
+          <span>突破成交口數 >=</span>
+          <input id="breakout-min-volume" type="number" min="0" step="50" value="0" inputmode="numeric">
+        </label>
       </div>
       <div class="pool-tab-panel" id="pool-panel-small" role="tabpanel" aria-labelledby="pool-tab-small" data-pool-panel="small">
         <div class="scroll-frame">
@@ -4394,10 +4412,17 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
           </section>
         </div>
       </div>
-      <div class="pool-tab-panel" id="pool-panel-breakout" role="tabpanel" aria-labelledby="pool-tab-breakout" data-pool-panel="breakout" hidden>
+      <div class="pool-tab-panel" id="pool-panel-breakout-up" role="tabpanel" aria-labelledby="pool-tab-breakout-up" data-pool-panel="breakout-up" hidden>
         <div class="scroll-frame">
-          <section class="table-wrap" id="breakout-table-wrap" aria-label="突破昨日高點或跌破昨日低點列表">
-            {breakout_content}
+          <section class="table-wrap" id="breakout-up-table-wrap" aria-label="突破昨日高點列表">
+            {breakout_up_content}
+          </section>
+        </div>
+      </div>
+      <div class="pool-tab-panel" id="pool-panel-breakout-down" role="tabpanel" aria-labelledby="pool-tab-breakout-down" data-pool-panel="breakout-down" hidden>
+        <div class="scroll-frame">
+          <section class="table-wrap" id="breakout-down-table-wrap" aria-label="跌破昨日低點列表">
+            {breakout_down_content}
           </section>
         </div>
       </div>
@@ -4453,7 +4478,8 @@ def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
         table_content=rows_html,
         active_table_content=active_rows_html,
         new_entry_content=new_entry_html,
-        breakout_content=breakout_html,
+        breakout_up_content=breakout_up_html,
+        breakout_down_content=breakout_down_html,
         watchlist_content=watchlist_html,
         max_atr=max_atr,
     )
@@ -5782,17 +5808,24 @@ def _render_new_entry_rows(rows: List[Dict[str, object]]) -> str:
 </table>""".format(rows="\n".join(body_rows))
 
 
-def _breakout_display_rows(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+def _breakout_display_rows(
+    rows: List[Dict[str, object]],
+    direction: str,
+    min_volume: float = 0,
+    limit: int = BREAKOUT_TAB_TOP_N,
+) -> List[Dict[str, object]]:
     breakout_rows = [
         row
         for row in rows
-        if _string_value(row.get("breakout_direction")).strip() in {"up", "down"}
+        if _string_value(row.get("breakout_direction")).strip() == direction
+        and (_numeric_value(row.get("volume")) or 0) >= min_volume
     ]
-    return sorted(
+    sorted_rows = sorted(
         breakout_rows,
         key=lambda row: (_breakout_magnitude(row), _numeric_value(row.get("volume")) or 0),
         reverse=True,
     )
+    return sorted_rows[:limit]
 
 
 def _breakout_magnitude(row: Dict[str, object]) -> float:
@@ -5818,9 +5851,17 @@ def _render_breakout_status(row: Dict[str, object]) -> str:
     return '<span class="{class_name}">{label}</span>'.format(class_name=class_name, label=escape(label))
 
 
-def _render_breakout_rows(rows: List[Dict[str, object]]) -> str:
+def _breakout_empty_message(direction: str) -> str:
+    if direction == "up":
+        return "尚無符合口數條件的突破昨高標的"
+    if direction == "down":
+        return "尚無符合口數條件的跌破昨低標的"
+    return "尚無符合口數條件的昨高低突破標的"
+
+
+def _render_breakout_rows(rows: List[Dict[str, object]], direction: str, min_volume: float = 0) -> str:
     body_rows = []
-    for index, row in enumerate(_breakout_display_rows(rows), start=1):
+    for index, row in enumerate(_breakout_display_rows(rows, direction, min_volume), start=1):
         spread_per = row.get("spread_per")
         distance_to_high = row.get("distance_to_previous_high_percent")
         distance_to_low = row.get("distance_to_previous_low_percent")
@@ -5857,7 +5898,11 @@ def _render_breakout_rows(rows: List[Dict[str, object]]) -> str:
         )
 
     if not body_rows:
-        body_rows.append('<tr><td class="empty-row" colspan="11">尚無突破昨日高點或低點的標的</td></tr>')
+        body_rows.append(
+            '<tr><td class="empty-row" colspan="11">{}</td></tr>'.format(
+                escape(_breakout_empty_message(direction))
+            )
+        )
 
     return """<table>
   <thead>
@@ -6125,6 +6170,7 @@ def _dashboard_script() -> str:
   const INTRADAY_BUCKET_MINUTES = 15;
   const INTRADAY_TOP_N = 50;
   const INTRADAY_CHART_TOP_N = 24;
+  const BREAKOUT_TOP_N = 20;
   const OUT_OF_TOP_RANK = INTRADAY_TOP_N + 1;
   const INTRADAY_STORAGE_PREFIX = "stock-futures-intraday-history-v1";
   const completedClosingRefreshes = new Set();
@@ -6207,14 +6253,16 @@ def _dashboard_script() -> str:
     pool: new Map(),
     activePool: new Map(),
     newEntry: new Map(),
-    breakout: new Map(),
+    breakoutUp: new Map(),
+    breakoutDown: new Map(),
     watchlist: new Map()
   };
   const poolTabSubtitles = {
     small: "小型股票期貨，價格 500~5000，流動與波動同時達標",
     large: "大型股票期貨，價格 200 以下，口數與 ATR 條件達標",
     new: "前一交易日 50 名外，最新交易日進入口數 Top 50",
-    breakout: "用全部 watchlist 追蹤當下突破昨日高點或跌破昨日低點"
+    "breakout-up": "用全部 watchlist 篩出突破昨高標的，依突破幅度取前 20 名",
+    "breakout-down": "用全部 watchlist 篩出跌破昨低標的，依跌破幅度取前 20 名"
   };
   const watchlistTabSubtitles = {
     all: "全部股票期貨產品，即時報價一律取近月契約",
@@ -6223,6 +6271,7 @@ def _dashboard_script() -> str:
   };
   let currentWatchlistRows = [];
   let currentWatchlistTab = "all";
+  let breakoutMinVolume = 0;
   let butterflyFilterState = { industry: "all", limit: "all", minVolume: 0 };
 
   function applyTheme(theme) {
@@ -7566,6 +7615,27 @@ def _dashboard_script() -> str:
     switchPoolTab("small");
   }
 
+  function setBreakoutMinVolume(value) {
+    const parsed = Number(String(value || "").replace(/,/g, ""));
+    breakoutMinVolume = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    const input = document.getElementById("breakout-min-volume");
+    if (input && String(input.value) !== String(breakoutMinVolume)) input.value = String(breakoutMinVolume);
+  }
+
+  function initBreakoutFilters() {
+    const input = document.getElementById("breakout-min-volume");
+    if (!input) return;
+    setBreakoutMinVolume(input.value);
+    input.addEventListener("input", () => {
+      setBreakoutMinVolume(input.value);
+      renderBreakoutTables(currentWatchlistRows);
+    });
+    input.addEventListener("change", () => {
+      setBreakoutMinVolume(input.value);
+      renderBreakoutTables(currentWatchlistRows);
+    });
+  }
+
   function watchlistTypeTokens(row) {
     return String(row && (row.contract_type || row.contract_type_label) || "")
       .split(/[,\s、，\\/]+/)
@@ -7769,11 +7839,12 @@ def _dashboard_script() -> str:
     return value === null ? -1 : Math.abs(value);
   }
 
-  function breakoutDisplayRows(rows) {
+  function breakoutDisplayRows(rows, direction) {
     return (rows || [])
       .filter((row) => {
-        const direction = breakoutDirection(row);
-        return direction === "up" || direction === "down";
+        const rowDirection = breakoutDirection(row);
+        const volume = numberOrNull(row.volume) || 0;
+        return rowDirection === direction && volume >= breakoutMinVolume;
       })
       .slice()
       .sort((a, b) => {
@@ -7782,7 +7853,8 @@ def _dashboard_script() -> str:
         const volumeDiff = (numberOrNull(b.volume) || 0) - (numberOrNull(a.volume) || 0);
         if (volumeDiff) return volumeDiff;
         return String(a.stock_id || "").localeCompare(String(b.stock_id || ""), "zh-Hant");
-      });
+      })
+      .slice(0, BREAKOUT_TOP_N);
   }
 
   function renderBreakoutStatus(row) {
@@ -7796,10 +7868,16 @@ def _dashboard_script() -> str:
     return `<span class="${className}">${escapeHtml(label)}</span>`;
   }
 
-  function renderBreakoutRows(rows) {
-    const displayRows = breakoutDisplayRows(rows);
+  function breakoutEmptyMessage(direction) {
+    if (direction === "up") return "尚無符合口數條件的突破昨高標的";
+    if (direction === "down") return "尚無符合口數條件的跌破昨低標的";
+    return "尚無符合口數條件的昨高低突破標的";
+  }
+
+  function renderBreakoutRows(rows, direction, tableName) {
+    const displayRows = breakoutDisplayRows(rows, direction);
     if (!displayRows.length) {
-      return emptyRender('<tr><td class="empty-row" colspan="11">尚無突破昨日高點或低點的標的</td></tr>');
+      return emptyRender(`<tr><td class="empty-row" colspan="11">${escapeHtml(breakoutEmptyMessage(direction))}</td></tr>`);
     }
     const signatures = new Map();
     const html = displayRows.map((row, index) => {
@@ -7817,10 +7895,11 @@ def _dashboard_script() -> str:
         row.previous_low,
         row.distance_to_previous_high_percent,
         row.distance_to_previous_low_percent,
-        row.volume
+        row.volume,
+        breakoutMinVolume
       ]);
       signatures.set(key, signature);
-      return `<tr${rowAttributes("breakout", key, signature)}>
+      return `<tr${rowAttributes(tableName, key, signature)}>
         <td class="number">${index + 1}</td>
         <td><div class="stock"><strong>${escapeHtml(row.stock_name || "-")}</strong><span>${escapeHtml(stockMeta(row))}</span></div></td>
         <td>${renderBreakoutStatus(row)}</td>
@@ -7891,9 +7970,14 @@ def _dashboard_script() -> str:
     renderTable("newEntry", "new-entry-table-wrap", newEntryTableHead, rendered.html, rendered.signatures);
   }
 
-  function renderBreakoutTable(rows) {
-    const rendered = renderBreakoutRows(rows);
-    renderTable("breakout", "breakout-table-wrap", breakoutTableHead, rendered.html, rendered.signatures);
+  function renderBreakoutTable(rows, direction, tableName, tableWrapId) {
+    const rendered = renderBreakoutRows(rows, direction, tableName);
+    renderTable(tableName, tableWrapId, breakoutTableHead, rendered.html, rendered.signatures);
+  }
+
+  function renderBreakoutTables(rows) {
+    renderBreakoutTable(rows, "up", "breakoutUp", "breakout-up-table-wrap");
+    renderBreakoutTable(rows, "down", "breakoutDown", "breakout-down-table-wrap");
   }
 
   function renderWatchlistTable(rows) {
@@ -7925,8 +8009,15 @@ def _dashboard_script() -> str:
       new Map()
     );
     renderTable(
-      "breakout",
-      "breakout-table-wrap",
+      "breakoutUp",
+      "breakout-up-table-wrap",
+      breakoutTableHead,
+      `<tr><td class="empty-row" colspan="11">${escapeHtml(message)}</td></tr>`,
+      new Map()
+    );
+    renderTable(
+      "breakoutDown",
+      "breakout-down-table-wrap",
       breakoutTableHead,
       `<tr><td class="empty-row" colspan="11">${escapeHtml(message)}</td></tr>`,
       new Map()
@@ -7992,7 +8083,7 @@ def _dashboard_script() -> str:
       renderPoolTable(payload.rows || []);
       renderActivePoolTable(payload.active_rows || []);
       renderNewEntryTable(payload.new_entry_rows || []);
-      renderBreakoutTable(payload.watchlist_rows || []);
+      renderBreakoutTables(payload.watchlist_rows || []);
       renderWatchlistTable(payload.watchlist_rows || []);
       renderTodayOverviewChart(payload.watchlist_rows || []);
       renderButterflyChart(payload.watchlist_rows || []);
@@ -8034,6 +8125,7 @@ def _dashboard_script() -> str:
   initAtrFilter();
   initAsOfFilter();
   initPoolTabs();
+  initBreakoutFilters();
   initWatchlistTabs();
   initButterflyFilters();
   loadCachedIntradayTrajectory().finally(() => loadPool());
