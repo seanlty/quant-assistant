@@ -5,12 +5,25 @@ on:
     inputs:
       mode:
         description: "Refresh mode: auto, intraday_snapshot, final_snapshot, rebuild_trajectory"
+        type: choice
         required: false
-        default: "auto"
+        default: "intraday_snapshot"
+        options:
+          - intraday_snapshot
+          - final_snapshot
+          - rebuild_trajectory
+          - auto
       min_atr_percent:
         description: "Dashboard ATR filter"
+        type: choice
         required: false
         default: "3"
+        options: ["2", "2.5", "3", "3.5", "4", "4.5", "5"]
+      as_of:
+        description: "Data date (YYYY-MM-DD); leave blank for the server default"
+        type: string
+        required: false
+        default: ""
   schedule:
     - cron: "48 8 * * 1-5"
       timezone: "Asia/Taipei"
@@ -25,16 +38,19 @@ concurrency:
   group: dashboard-scheduled-refresh
   cancel-in-progress: false
 
+permissions: {}
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
-      DEFAULT_DASHBOARD_BASE_URL: "https://futures-dashboard-app.zeabur.app"
+      DEFAULT_DASHBOARD_BASE_URL: "https://quant-assistant-production.up.railway.app"
       DASHBOARD_BASE_URL: ${{ vars.DASHBOARD_BASE_URL }}
       DASHBOARD_REFRESH_TOKEN: ${{ secrets.DASHBOARD_REFRESH_TOKEN }}
       INPUT_MODE: ${{ github.event.inputs.mode }}
       INPUT_MIN_ATR_PERCENT: ${{ github.event.inputs.min_atr_percent }}
+      INPUT_AS_OF: ${{ github.event.inputs.as_of }}
       EVENT_SCHEDULE: ${{ github.event.schedule }}
       EVENT_NAME: ${{ github.event_name }}
     steps:
@@ -60,6 +76,30 @@ jobs:
             mode="${INPUT_MODE}"
           fi
           min_atr="${INPUT_MIN_ATR_PERCENT:-3}"
+          case "${mode}" in
+            auto|intraday_snapshot|final_snapshot|rebuild_trajectory) ;;
+            *) echo "::error::Unsupported refresh mode."; exit 1 ;;
+          esac
+          case "${min_atr}" in
+            2|2.5|3|3.5|4|4.5|5) ;;
+            *) echo "::error::Unsupported ATR filter."; exit 1 ;;
+          esac
+          python - <<'PY'
+          import os
+          from datetime import date, datetime, timedelta, timezone
+
+          requested_date = os.environ.get("INPUT_AS_OF", "")
+          if requested_date:
+              try:
+                  parsed = date.fromisoformat(requested_date)
+                  assert parsed.isoformat() == requested_date
+              except (ValueError, AssertionError):
+                  raise SystemExit("::error::as_of must be YYYY-MM-DD.")
+              if os.environ.get("INPUT_MODE") in {"auto", "rebuild_trajectory"}:
+                  today = datetime.now(timezone(timedelta(hours=8))).date()
+                  if parsed != today:
+                      raise SystemExit("::error::Historical as_of is supported for snapshot modes only; candles cannot rebuild arbitrary past dates.")
+          PY
           echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
           echo "min_atr_percent=${min_atr}" >> "${GITHUB_OUTPUT}"
           echo "rebuild_after_refresh=${rebuild_after_refresh}" >> "${GITHUB_OUTPUT}"
@@ -74,6 +114,10 @@ jobs:
           fi
           base_url="${DASHBOARD_BASE_URL:-${DEFAULT_DASHBOARD_BASE_URL}}"
           base_url="${base_url%/}"
+          if [ "${base_url}" != "${DEFAULT_DASHBOARD_BASE_URL}" ]; then
+            echo "::error::DASHBOARD_BASE_URL must point to the Railway dashboard."
+            exit 1
+          fi
           mode="${{ steps.decide.outputs.mode }}"
           min_atr="${{ steps.decide.outputs.min_atr_percent }}"
           call_refresh() {
@@ -84,33 +128,83 @@ jobs:
             if [ "${refresh_snapshot}" = "1" ]; then
               url="${url}&refresh_snapshot=1"
             fi
-            echo "Calling ${base_url}/api/admin/refresh with mode=${call_mode}, min_atr_percent=${min_atr}, refresh_snapshot=${refresh_snapshot:-0}"
+            if [ -n "${INPUT_AS_OF}" ]; then
+              url="${url}&as_of=${INPUT_AS_OF}"
+            fi
+            local started_at
+            started_at="$(date +%s)"
+            echo "Calling ${base_url}/api/admin/refresh with mode=${call_mode}, min_atr_percent=${min_atr}, as_of=${INPUT_AS_OF:-server-default}"
             curl \
               --fail-with-body \
               --show-error \
               --silent \
-              --location \
-              --retry 2 \
-              --retry-delay 20 \
+              --request POST \
+              --connect-timeout 20 \
               --max-time 600 \
               --header "Authorization: Bearer ${DASHBOARD_REFRESH_TOKEN}" \
               "${url}" \
               --output "${output_file}"
-            cat "${output_file}"
-            python - "${output_file}" <<'PY'
+            python - "${output_file}" "${base_url}" "${min_atr}" "${started_at}" <<'PY'
           import json
+          import os
           import sys
+          from datetime import date, datetime, timedelta, timezone
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode
+          from urllib.request import urlopen
 
-          response_path = sys.argv[1]
-          with open(response_path, "r", encoding="utf-8") as response_file:
-              payload = json.load(response_file)
-          if payload.get("status") != "ok":
-              print("Refresh endpoint returned non-ok payload:", payload)
-              sys.exit(1)
-          if payload.get("mode") == "rebuild_trajectory" and int(payload.get("trajectory_snapshot_count") or 0) <= 0:
-              print("Trajectory rebuild returned no snapshots:", payload)
-              sys.exit(1)
-          print("Refresh OK:", payload.get("mode"), payload.get("as_of_date"), payload.get("trajectory_last_cutoff"))
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit("::error::" + message)
+
+          def read_back(path, params):
+              with urlopen(base_url + path + "?" + urlencode(params), timeout=60) as response:
+                  return json.load(response)
+
+          def require_fresh(timestamp):
+              parsed = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S GMT+8")
+              parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
+              require(parsed.timestamp() >= started_at - 5, "Returned data predates this refresh.")
+
+          response_path, base_url, min_atr, started_at = sys.argv[1:]
+          started_at = int(started_at)
+          try:
+              with open(response_path, "r", encoding="utf-8") as response_file:
+                  payload = json.load(response_file)
+              require(payload.get("status") == "ok", "Refresh endpoint returned a non-ok status; response body withheld.")
+              data_date = date.fromisoformat(payload["as_of_date"]).isoformat()
+              requested_date = os.environ.get("INPUT_AS_OF", "")
+              require(not requested_date or data_date == requested_date, "Returned data date differs from as_of.")
+              mode = payload.get("mode")
+              require(mode in {"intraday_snapshot", "final_snapshot", "rebuild_trajectory"}, "Unexpected response mode.")
+              summary = {"mode": mode, "as_of_date": data_date}
+              if mode == "rebuild_trajectory":
+                  require_fresh(payload["updated_at"])
+                  history = read_back("/api/intraday-trajectory", {"as_of": data_date})
+                  count = len(history.get("snapshots", []))
+                  require(history.get("as_of_date") == data_date, "Trajectory date mismatch.")
+                  require(count > 0 and count == int(payload.get("trajectory_snapshot_count") or 0), "Trajectory read-back count mismatch.")
+                  require_fresh(history["updated_at"])
+                  candle_errors = int(payload.get("source", {}).get("fugle_candle_fetch_error_count") or 0)
+                  require(candle_errors == 0, "Trajectory contains failed candle requests; inspect the upstream service.")
+                  summary["trajectory_snapshot_count"] = count
+              else:
+                  require_fresh(payload["generated_at"])
+                  snapshot = read_back("/api/pool", {"as_of": data_date, "min_atr_percent": min_atr})
+                  require(snapshot.get("as_of_date") == data_date, "Snapshot read-back date mismatch.")
+                  require(not snapshot.get("source", {}).get("stale_cache_fallback"), "Snapshot fell back to stale cache.")
+                  require(int(snapshot.get("watchlist_count") or 0) > 0, "Snapshot watchlist is empty.")
+                  require_fresh(snapshot["generated_at"])
+                  summary["watchlist_count"] = int(snapshot["watchlist_count"])
+                  summary["generated_at"] = snapshot["generated_at"]
+                  summary["final_ready"] = bool(payload.get("final_ready"))
+              print("Refresh verified:", json.dumps(summary, ensure_ascii=False))
+          except HTTPError as error:
+              raise SystemExit("::error::Read-back request failed with HTTP {}.".format(error.code)) from None
+          except (URLError, TimeoutError, OSError):
+              raise SystemExit("::error::Read-back request failed; details withheld.") from None
+          except (ValueError, TypeError, KeyError, AttributeError):
+              raise SystemExit("::error::Invalid refresh/read-back response; body withheld.") from None
           PY
           }
           call_refresh "${mode}" "response.json"
