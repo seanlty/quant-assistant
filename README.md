@@ -57,6 +57,8 @@ USE_TAIFEX_STOCK_LISTS=0
 
 GitHub Actions / 外部 cron 要觸發背景更新時，請呼叫受保護的 `/api/admin/refresh` endpoint，並在 Zeabur 與 GitHub repository secret 設定同一組 `DASHBOARD_REFRESH_TOKEN`。Zeabur Volume 與排程設定細節見 `docs/zeabur_scheduled_refresh.md`。
 
+手動更新今天日內資料、回補走勢、參數與驗證方式，請看 [資料更新 Endpoint 使用說明](docs/update_endpoints.md)。
+
 ## 目錄用途
 
 - `src/`：dashboard 入口與資料串接邏輯。

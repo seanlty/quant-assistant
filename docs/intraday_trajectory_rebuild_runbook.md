@@ -2,6 +2,8 @@
 
 此文件用於排查 Zeabur 上的 dashboard 在盤中才開頁面時，排名軌跡沒有從 08:45 起完整累積的情況。
 
+完整 endpoint 規格與日常操作步驟，請看 [資料更新 Endpoint 使用說明](update_endpoints.md)。
+
 頁面本身呼叫 `/api/pool` 時只會 append 當下截點，不能回補開盤後已經錯過的截點。要回補整天日內軌跡，請呼叫受保護的 `rebuild_trajectory` admin endpoint。
 
 ## 快速重建指令

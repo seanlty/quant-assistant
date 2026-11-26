@@ -2,6 +2,8 @@
 
 此專案的瀏覽器端自動更新只能在有人開著頁面時運作。要讓 Zeabur 服務在沒人開頁面時也更新，改由 GitHub Actions 定時呼叫 server endpoint。
 
+完整 endpoint 參數、手動更新指令與資料完整性檢查，請看 [資料更新 Endpoint 使用說明](update_endpoints.md)。
+
 ## 已新增的 endpoint
 
 受保護 endpoint：

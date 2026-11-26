@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      DEFAULT_DASHBOARD_BASE_URL: "https://quant-assistant-v1.up.railway.app"
+      DEFAULT_DASHBOARD_BASE_URL: "https://stock-futures-v2.up.railway.app"
       DASHBOARD_BASE_URL: ${{ vars.DASHBOARD_BASE_URL }}
       DASHBOARD_REFRESH_TOKEN: ${{ secrets.DASHBOARD_REFRESH_TOKEN }}
       INPUT_MODE: ${{ github.event.inputs.mode }}
